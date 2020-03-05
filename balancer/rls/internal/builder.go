@@ -22,31 +22,41 @@
 package rls
 
 import (
+	"context"
 	"time"
+
+	"google.golang.org/grpc/balancer"
+	"google.golang.org/grpc/balancer/rls/internal/adaptive"
 )
 
 const (
 	rlsBalancerName = "rls"
-	// This is max duration that we are willing to cache RLS responses. If the
-	// service config doesn't specify a value for max_age or if it specified a
-	// value greater that this, we will use this value instead.
-	maxMaxAge = 5 * time.Minute
-	// If lookup_service_timeout is not specified in the service config, we use
-	// a default of 10 seconds.
-	defaultLookupServiceTimeout = 10 * time.Second
-	// This is set to the targetNameField in the child policy config during
-	// service config validation.
-	dummyChildPolicyTarget = "target_name_to_be_filled_in_later"
+	// The default interval at which the cache expiry goroutine runs to cleanup
+	// expired entries from the data cache.
+	defaultCacheExpiryFreq = 1 * time.Second
 )
 
 // rlsBB helps build RLS load balancers and parse the service config to be
 // passed to the RLS load balancer.
-type rlsBB struct {
-	// TODO(easwars): Implement the Build() method and register the builder.
-}
+type rlsBB struct{}
 
 // Name returns the name of the RLS LB policy and helps implement the
 // balancer.Balancer interface.
 func (*rlsBB) Name() string {
 	return rlsBalancerName
+}
+
+func (*rlsBB) Build(cc balancer.ClientConn, opts balancer.BuildOptions) balancer.Balancer {
+	ctx, cancel := context.WithCancel(context.Background())
+	lb := &rlsBalancer{
+		ctx:        ctx,
+		cancel:     cancel,
+		cc:         cc,
+		opts:       opts,
+		throttler:  adaptive.New(),
+		expiryFreq: defaultCacheExpiryFreq,
+		ccUpdateCh: make(chan *balancer.ClientConnState),
+	}
+	go lb.run()
+	return lb
 }

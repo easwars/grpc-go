@@ -31,7 +31,6 @@ import (
 
 	"google.golang.org/grpc/balancer"
 	rlspb "google.golang.org/grpc/balancer/rls/internal/proto/grpc_lookup_v1"
-	"google.golang.org/grpc/resolver"
 
 	_ "google.golang.org/grpc/balancer/grpclb"               // grpclb for config parsing.
 	_ "google.golang.org/grpc/internal/resolver/passthrough" // passthrough resolver.
@@ -103,7 +102,7 @@ func TestParseConfig(t *testing.T) {
 				"childPolicyConfigTargetFieldName": "service_name"
 			}`),
 			wantCfg: &lbConfig{
-				lookupService:        resolver.Target{Scheme: "passthrough", Endpoint: "target"},
+				lookupService:        "passthrough:///target",
 				lookupServiceTimeout: 10 * time.Second, // This is the default value.
 				maxAge:               5 * time.Minute,  // This is max maxAge.
 				staleAge:             time.Duration(0), // StaleAge is ignore because it was higher than maxAge.
@@ -134,7 +133,7 @@ func TestParseConfig(t *testing.T) {
 				"childPolicyConfigTargetFieldName": "service_name"
 			}`),
 			wantCfg: &lbConfig{
-				lookupService:        resolver.Target{Scheme: "passthrough", Endpoint: "target"},
+				lookupService:        "passthrough:///target",
 				lookupServiceTimeout: 100 * time.Second,
 				maxAge:               60 * time.Second,
 				staleAge:             50 * time.Second,

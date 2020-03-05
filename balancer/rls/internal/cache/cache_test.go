@@ -117,7 +117,7 @@ func TestRemove(t *testing.T) {
 func TestExceedingSizeCausesEviction(t *testing.T) {
 	const (
 		testCacheSize = 5
-		testTimeout   = 2 * time.Second
+		testTimeout   = 1 * time.Second
 	)
 
 	evictCh := make(chan Key, testCacheSize)
@@ -155,7 +155,7 @@ func TestExceedingSizeCausesEviction(t *testing.T) {
 func TestAddCausesMultipleEvictions(t *testing.T) {
 	const (
 		testCacheSize = 5
-		testTimeout   = 2 * time.Second
+		testTimeout   = 1 * time.Second
 	)
 
 	evictCh := make(chan Key, testCacheSize)
@@ -193,7 +193,7 @@ func TestAddCausesMultipleEvictions(t *testing.T) {
 func TestModifyCausesMultipleEvictions(t *testing.T) {
 	const (
 		testCacheSize = 5
-		testTimeout   = 2 * time.Second
+		testTimeout   = 1 * time.Second
 	)
 
 	evictCh := make(chan Key, testCacheSize)
@@ -219,5 +219,55 @@ func TestModifyCausesMultipleEvictions(t *testing.T) {
 				t.Fatalf("Evicted key %+v, wanted %+v", k, keysToFill[i])
 			}
 		}
+	}
+}
+
+func TestLRUResize(t *testing.T) {
+	tests := []struct {
+		desc            string
+		maxSize         int64
+		keysToFill      []Key
+		newMaxSize      int64
+		wantEvictedKeys []Key
+	}{
+		{
+			desc:            "resize causes multiple evictions",
+			maxSize:         5,
+			keysToFill:      []Key{{Path: "a"}, {Path: "b"}, {Path: "c"}, {Path: "d"}, {Path: "e"}},
+			newMaxSize:      3,
+			wantEvictedKeys: []Key{{Path: "a"}, {Path: "b"}},
+		},
+		{
+			desc:            "resize causes no evictions",
+			maxSize:         50,
+			keysToFill:      []Key{{Path: "a"}, {Path: "b"}, {Path: "c"}, {Path: "d"}, {Path: "e"}},
+			newMaxSize:      10,
+			wantEvictedKeys: []Key{},
+		},
+		{
+			desc:            "resize to higher value",
+			maxSize:         5,
+			keysToFill:      []Key{{Path: "a"}, {Path: "b"}, {Path: "c"}, {Path: "d"}, {Path: "e"}},
+			newMaxSize:      10,
+			wantEvictedKeys: []Key{},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.desc, func(t *testing.T) {
+			var evictedKeys []Key
+			onEvicted := func(k Key, _ *Entry) {
+				evictedKeys = append(evictedKeys, k)
+			}
+
+			lru := NewLRU(test.maxSize, onEvicted)
+			for _, key := range test.keysToFill {
+				lru.Add(key, &Entry{})
+			}
+			lru.Resize(test.newMaxSize)
+			if !cmp.Equal(evictedKeys, test.wantEvictedKeys, cmpopts.EquateEmpty()) {
+				t.Fatalf("lru.Resize evicted keys {%v}, should have evicted {%v}", evictedKeys, test.wantEvictedKeys)
+			}
+		})
 	}
 }
