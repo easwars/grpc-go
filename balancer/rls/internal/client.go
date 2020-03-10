@@ -24,6 +24,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	rlspb "google.golang.org/grpc/balancer/rls/internal/proto/grpc_lookup_v1"
 )
@@ -78,10 +79,16 @@ func (c *rlsClient) lookup(path string, keyMap map[string]string, cb lookupCallb
 			TargetType: grpcTargetType,
 			KeyMap:     keyMap,
 		})
-		if grpc.Code(err) == codes.Canceled {
+		if st, ok := status.FromError(err); ok && st.Code() == codes.Canceled {
+			// This indicates that the cancel function we returned was invoked to
+			// cancel the RPC. Don't invoke the callback in this case.
 			return
 		}
 		cb(resp.GetTarget(), resp.GetHeaderData(), err)
 	}()
 	return cancel
+}
+
+func (c *rlsClient) close() {
+	c.cc.Close()
 }

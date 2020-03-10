@@ -79,7 +79,7 @@ type Entry struct {
 	CallStatus error
 	// Backoff contains all backoff related state. When an RLS request
 	// succeeds, backoff state is reset.
-	Backoff *BackoffState
+	Backoff BackoffState
 	// HeaderData is received in an RLS response and is to be sent in the
 	// X-Google-RLS-Data header for matching RPCs.
 	HeaderData string

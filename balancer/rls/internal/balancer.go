@@ -20,7 +20,6 @@ package rls
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -29,6 +28,7 @@ import (
 	"google.golang.org/grpc/balancer"
 	"google.golang.org/grpc/balancer/rls/internal/cache"
 	"google.golang.org/grpc/balancer/rls/internal/keys"
+	rlspb "google.golang.org/grpc/balancer/rls/internal/proto/grpc_lookup_v1"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/grpclog"
 	"google.golang.org/grpc/resolver"
@@ -42,6 +42,15 @@ type adaptiveThrottler interface {
 	RegisterBackendResponse(throttled bool)
 }
 
+type pendingEntry struct {
+	boState cache.BackoffState
+	cancel  func()
+}
+
+type childPolicyWrapper struct {
+	// TODO(easwars): Implement this.
+}
+
 type rlsBalancer struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -50,13 +59,13 @@ type rlsBalancer struct {
 	expiryFreq time.Duration
 	throttler  adaptiveThrottler
 
-	lbCfg *lbConfig
-
-	rlsC *rlsClient
+	lbCfg          *lbConfig
+	rlsC           *rlsClient
+	childPolicyMap map[string]childPolicyWrapper
 
 	cacheMu      sync.Mutex
 	dataCache    cache.LRU
-	pendingCache map[cache.Key]cache.Entry
+	pendingCache map[cache.Key]*pendingEntry
 
 	ccUpdateCh chan *balancer.ClientConnState
 }
@@ -114,6 +123,8 @@ func (lb *rlsBalancer) handleClientConnUpdate(ccs *balancer.ClientConnState) {
 	// have to update all the cache entries to update the childPolicy. Just
 	// updating the wrapper objects should make the updated childPolicy visible to
 	// the cache entries.
+
+	lb.lbCfg = newCfg
 }
 
 func (lb *rlsBalancer) UpdateClientConnState(ccs balancer.ClientConnState) error {
@@ -135,6 +146,9 @@ func (lb *rlsBalancer) UpdateSubConnState(_ balancer.SubConn, _ balancer.SubConn
 
 func (lb *rlsBalancer) Close() {
 	lb.cancel()
+	if lb.rlsC != nil {
+		lb.rlsC.close()
+	}
 }
 
 func (lb *rlsBalancer) HandleSubConnStateChange(_ balancer.SubConn, _ connectivity.State) {
@@ -145,22 +159,70 @@ func (ls *rlsBalancer) HandleResolvedAddrs(_ []resolver.Address, _ error) {
 	grpclog.Errorf("UpdateClientConnState should be called instead of HandleResolvedAddrs")
 }
 
-func (lb *rlsBalancer) makeRLSRequest(path string, km keys.KeyMap) {
+func (lb *rlsBalancer) makeRLSRequest(path string, km keys.KeyMap, boState cache.BackoffState) {
+	lb.cacheMu.Lock()
+	key := cache.Key{Path: path, KeyMap: km.Str}
+	lb.pendingCache[key] = &pendingEntry{
+		boState: boState,
+		cancel: lb.rlsC.lookup(path, km.Map, func(target, headerData string, err error) {
+		}),
+	}
+
+	lb.cacheMu.Unlock()
 }
 
-func dialRLS(server string, opts balancer.BuildOptions) (*grpc.ClientConn, error) {
-	var dopts []grpc.DialOption
-	if dialer := opts.Dialer; dialer != nil {
-		dopts = append(dopts, grpc.WithContextDialer(dialer))
-	}
-	dopts = append(dopts, dialCreds(server, opts))
+func (lb *rlsBalancer) handleRLSResponse(key cache.Key, target, headerData string, err error) {
+	lb.throttler.RegisterBackendResponse(err != nil)
 
-	cc, err := grpc.Dial(server, dopts...)
-	if err != nil {
-		// An error from a non-blocking dial indicates something serious.
-		return nil, fmt.Errorf("rls: grpc.Dial(%s): %v", server, err)
+	lb.cacheMu.Lock()
+	defer lb.cacheMu.Unlock()
+
+	pe, ok := lb.pendingCache[key]
+	if !ok {
+		// This should never happen in reality.
+		grpclog.Errorf("rls: no pending cache entry for {%v} when handling response with {%v, %v}", target, headerData, key)
+		return
 	}
-	return cc, nil
+	pe.cancel()
+	lb.pendingCache[key] = nil
+
+	ce := lb.dataCache.Get(key)
+	if ce == nil {
+		ce = &cache.Entry{}
+	}
+	now := time.Now()
+
+	if err != nil {
+		ce.CallStatus = err
+		ce.Backoff = pe.boState
+		ce.Backoff.Retries++
+		boTime := ce.Backoff.Backoff.Backoff(ce.Backoff.Retries)
+		ce.BackoffTime = now.Add(boTime)
+		ce.BackoffExpiryTime = now.Add(boTime * 2)
+
+		strategy := lb.lbCfg.rpStrategy
+		if strategy == rlspb.RouteLookupConfig_SYNC_LOOKUP_CLIENT_SEES_ERROR {
+			ce.Backoff.Timer = time.AfterFunc(boTime, func() {
+				// TODO(easwars): Need to send a new picker upstairs.
+			})
+		}
+		if strategy == rlspb.RouteLookupConfig_SYNC_LOOKUP_DEFAULT_TARGET_ON_ERROR ||
+			strategy == rlspb.RouteLookupConfig_SYNC_LOOKUP_CLIENT_SEES_ERROR {
+			// TODO(easwars): Need to send a new picker upstairs.
+		}
+	} else {
+		// TODO(easwars): Need to setup the child policy wrapper in the cache entry
+		// and send a picker upstairs if required.
+
+		// TODO(easwars): If this is the first response for this target, we need to
+		// add an entry to the childPolicyMap as well.
+
+		ce.HeaderData = headerData
+		ce.ExpiryTime = now.Add(lb.lbCfg.maxAge)
+		ce.StaleTime = now.Add(lb.lbCfg.staleAge)
+		ce.Backoff = &cache.BackoffState{}
+	}
+
 }
 
 // TODO(easwars): Make sure the RLS channel uses the same authority as the
@@ -183,15 +245,23 @@ func dialCreds(server string, opts balancer.BuildOptions) grpc.DialOption {
 
 // updateControlChannel updates the RLS client if required.
 func (lb *rlsBalancer) updateControlChannel(service string, timeout time.Duration) {
-	if service != lb.lbCfg.lookupService || timeout != lb.lbCfg.lookupServiceTimeout {
-		cc, err := dialRLS(service, lb.opts)
-		if err != nil {
-			grpclog.Errorf("rls: dialRLS(%s, %v): %v", service, lb.opts, err)
-			// A non-blocking dial has failed. We should continue to use the old
-			// control channel if one exists, and return so that the rest of the
-			// config updates can be processes.
-			return
-		}
-		lb.rlsC = newRLSClient(cc, lb.opts.Target.Endpoint, timeout)
+	if service == lb.lbCfg.lookupService && timeout == lb.lbCfg.lookupServiceTimeout {
+		return
 	}
+
+	var dopts []grpc.DialOption
+	if dialer := lb.opts.Dialer; dialer != nil {
+		dopts = append(dopts, grpc.WithContextDialer(dialer))
+	}
+	dopts = append(dopts, dialCreds(service, lb.opts))
+
+	cc, err := grpc.Dial(service, dopts...)
+	if err != nil {
+		grpclog.Errorf("rls: dialRLS(%s, %v): %v", service, lb.opts, err)
+		// An error from a non-blocking dial indicates something serious. We
+		// should continue to use the old control channel if one exists, and
+		// return so that the rest of the config updates can be processes.
+		return
+	}
+	lb.rlsC = newRLSClient(cc, lb.opts.Target.Endpoint, timeout)
 }
