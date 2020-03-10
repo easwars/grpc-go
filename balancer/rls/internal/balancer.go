@@ -159,39 +159,57 @@ func (ls *rlsBalancer) HandleResolvedAddrs(_ []resolver.Address, _ error) {
 	grpclog.Errorf("UpdateClientConnState should be called instead of HandleResolvedAddrs")
 }
 
+// makeRLSRequest initiates an RLS request through the control channel and sets
+// up a callback to handle the response. It also creates a pending cache entry.
 func (lb *rlsBalancer) makeRLSRequest(path string, km keys.KeyMap, boState cache.BackoffState) {
+	// Note that picker is holding an entry lock when it invokes this method,
+	// and we are attempting to grab the cache lock here. This should not lead
+	// to a deadlock because the picker releases the cache lock before
+	// attempting to grab the entry lock.
 	lb.cacheMu.Lock()
 	key := cache.Key{Path: path, KeyMap: km.Str}
 	lb.pendingCache[key] = &pendingEntry{
 		boState: boState,
-		cancel: lb.rlsC.lookup(path, km.Map, func(target, headerData string, err error) {
-		}),
+		cancel: lb.rlsC.lookup(path, km.Map, lb.handleRLSResponse),
 	}
-
 	lb.cacheMu.Unlock()
 }
 
+// handleRLSResponse is the callback registered with the rlsClient to handle an
+// RLS response.
 func (lb *rlsBalancer) handleRLSResponse(key cache.Key, target, headerData string, err error) {
 	lb.throttler.RegisterBackendResponse(err != nil)
 
+	// We grab the cache lock and perform the following:
+	// 1. Remove the entry in the pending cache.
+	// 2. Get/Add the corresponding entry from the data cache.
 	lb.cacheMu.Lock()
-	defer lb.cacheMu.Unlock()
-
 	pe, ok := lb.pendingCache[key]
 	if !ok {
 		// This should never happen in reality.
-		grpclog.Errorf("rls: no pending cache entry for {%v} when handling response with {%v, %v}", target, headerData, key)
+		grpclog.Errorf("rls: no pending cache entry for {%v} when handling response with {%s, %s}", key, target, headerData)
+		lb.cacheMu.Unlock()
 		return
 	}
+	// The cancel function returned by the lookup method on the rlsClient needs
+	// to be invoked to cleanup the context object allocated for the request,
+	// irrespective of whether the request succeeded or not.
 	pe.cancel()
 	lb.pendingCache[key] = nil
 
 	ce := lb.dataCache.Get(key)
 	if ce == nil {
 		ce = &cache.Entry{}
+		lb.dataCache.Add(key, ce)
 	}
-	now := time.Now()
+	lb.cacheMu.Unlock()
 
+	// We release the cache lock and then grab the entry lock and setup the
+	// fields in the entry based on the response.
+	ce.Mu.Lock()
+	defer ce.Mu.Unlock()
+
+	now := time.Now()
 	if err != nil {
 		ce.CallStatus = err
 		ce.Backoff = pe.boState
@@ -211,18 +229,18 @@ func (lb *rlsBalancer) handleRLSResponse(key cache.Key, target, headerData strin
 			// TODO(easwars): Need to send a new picker upstairs.
 		}
 	} else {
-		// TODO(easwars): Need to setup the child policy wrapper in the cache entry
-		// and send a picker upstairs if required.
+		// TODO(easwars): If this is the first response for this target, we need
+		// to create a childPolicyWrapper for it add an entry to the
+		// childPolicyMap.
 
-		// TODO(easwars): If this is the first response for this target, we need to
-		// add an entry to the childPolicyMap as well.
+		// TODO(easwars): Need to setup the child policy wrapper in the cache
+		// entry and send a picker upstairs if required.
 
 		ce.HeaderData = headerData
 		ce.ExpiryTime = now.Add(lb.lbCfg.maxAge)
 		ce.StaleTime = now.Add(lb.lbCfg.staleAge)
-		ce.Backoff = &cache.BackoffState{}
+		ce.Backoff = cache.BackoffState{}
 	}
-
 }
 
 // TODO(easwars): Make sure the RLS channel uses the same authority as the
