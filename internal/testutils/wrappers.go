@@ -37,15 +37,14 @@ func (cw *ConnWrapper) Close() error {
 }
 
 // ListenerWrapper wraps a net.Listener and the returned net.Conn.
-//
-// It pushes on a channel whenever it accepts a new connection.
 type ListenerWrapper struct {
 	net.Listener
-	NewConnCh *Channel
+	NewConnCh *Channel // Used to push accepted connections.
+	CloseCh   *Channel // Used to signal close.
 }
 
-// Accept wraps the Listener Accept and sends the accepted connection on a
-// channel.
+// Accept accepts a connection on the underlying net.Listener and sends the
+// accepted connection on the `NewConnCh` channel.
 func (l *ListenerWrapper) Accept() (net.Conn, error) {
 	c, err := l.Listener.Accept()
 	if err != nil {
@@ -55,6 +54,13 @@ func (l *ListenerWrapper) Accept() (net.Conn, error) {
 	conn := &ConnWrapper{Conn: c, CloseCh: closeCh}
 	l.NewConnCh.Send(conn)
 	return conn, nil
+}
+
+// Close closes the underlying net.Listener and sends a notification on the
+// `CloseCh` channel.
+func (l *ListenerWrapper) Close() error {
+	l.CloseCh.Send(nil)
+	return l.Listener.Close()
 }
 
 // NewListenerWrapper returns a ListenerWrapper.
@@ -70,5 +76,6 @@ func NewListenerWrapper(t *testing.T, lis net.Listener) *ListenerWrapper {
 	return &ListenerWrapper{
 		Listener:  lis,
 		NewConnCh: NewChannel(),
+		CloseCh:   NewChannel(),
 	}
 }

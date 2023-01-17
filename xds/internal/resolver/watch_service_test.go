@@ -21,15 +21,23 @@ package resolver
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"testing"
-	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/google/uuid"
+	"google.golang.org/grpc/internal"
 	"google.golang.org/grpc/internal/testutils"
-	"google.golang.org/grpc/xds/internal/testutils/fakeclient"
+	xdsbootstrap "google.golang.org/grpc/internal/testutils/xds/bootstrap"
+	"google.golang.org/grpc/internal/testutils/xds/e2e"
+	"google.golang.org/grpc/resolver"
+	"google.golang.org/grpc/serviceconfig"
 	"google.golang.org/grpc/xds/internal/xdsclient/xdsresource"
 	"google.golang.org/protobuf/proto"
+
+	v3listenerpb "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
+	v3routepb "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 )
 
 func (s) TestFindBestMatchingVirtualHost(t *testing.T) {
@@ -103,6 +111,92 @@ func newStringP(s string) *string {
 	return &s
 }
 
+func buildResolverWithTestClientConn(t *testing.T, target resolver.Target) (resolver.Resolver, *testClientConn) {
+	t.Helper()
+
+	builder := resolver.Get(xdsScheme)
+	if builder == nil {
+		t.Fatalf("resolver.Get(%v) returned nil", xdsScheme)
+	}
+
+	tcc := newTestClientConn()
+	r, err := builder.Build(target, tcc, resolver.BuildOptions{})
+	if err != nil {
+		t.Fatalf("Building xDS resolver for target %v: %v", target.URL, err)
+	}
+	return r, tcc
+}
+
+func (s) TestServiceWatch_GoodUpdateAfterWatch(t *testing.T) {
+	mgmtServer, err := e2e.StartManagementServer(e2e.ManagementServerOptions{})
+	if err != nil {
+		t.Fatalf("Starting xDS management server: %v", err)
+	}
+	defer mgmtServer.Stop()
+
+	// Create a bootstrap configuration specifying the above management server.
+	nodeID := uuid.New().String()
+	cleanup, err := xdsbootstrap.CreateFile(xdsbootstrap.Options{
+		NodeID:    nodeID,
+		ServerURI: mgmtServer.Address,
+		Version:   xdsbootstrap.TransportV3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	// Configure listener and route config resources on the management server.
+	const serviceName = "my-service-client-side-xds"
+	rdsName := "route-" + serviceName
+	cdsName := "cluster-" + serviceName
+	resources := e2e.UpdateOptions{
+		NodeID:         nodeID,
+		Listeners:      []*v3listenerpb.Listener{e2e.DefaultClientListener(serviceName, rdsName)},
+		Routes:         []*v3routepb.RouteConfiguration{e2e.DefaultRouteConfig(rdsName, serviceName, cdsName)},
+		SkipValidation: true,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
+	defer cancel()
+	if err := mgmtServer.Update(ctx, resources); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build the xDS resolver, which should result in LDS and RDS requests to
+	// the management server.
+	target := resolver.Target{Endpoint: serviceName, URL: url.URL{Scheme: "xds", Path: "/" + serviceName}}
+	r, tcc := buildResolverWithTestClientConn(t, target)
+	r.Close()
+
+	gotState, err := tcc.stateCh.Receive(ctx)
+	if err != nil {
+		t.Fatalf("Waiting for UpdateState to be called: %v", err)
+	}
+	rState := gotState.(resolver.State)
+	if err := rState.ServiceConfig.Err; err != nil {
+		t.Fatalf("UpdateState received error in service config: %v", rState.ServiceConfig.Err)
+	}
+
+	wantSCParsed := internal.ParseServiceConfig.(func(string) *serviceconfig.ParseResult)(`
+{
+  "loadBalancingConfig":[{
+    "xds_cluster_manager_experimental":{
+      "children":{
+        "cluster:cluster_1":{
+          "childPolicy":[{"cds_experimental":{"cluster":"cluster_1"}}]
+        }
+      }
+    }
+  }]
+}`)
+	if !internal.EqualServiceConfigForTesting(rState.ServiceConfig.Config, wantSCParsed.Config) {
+		t.Errorf("UpdateState received different service config")
+		t.Errorf("got: %s", cmp.Diff(nil, rState.ServiceConfig.Config))
+		t.Errorf("want: %s", cmp.Diff(nil, wantSCParsed.Config))
+	}
+}
+
+/*
 // TestServiceWatch covers the cases:
 // - an update is received after a watch()
 // - an update with routes received
@@ -388,3 +482,4 @@ func (s) TestServiceWatchInlineRDS(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+*/

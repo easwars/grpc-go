@@ -139,7 +139,7 @@ func (b *xdsResolverBuilder) Build(target resolver.Target, cc resolver.ClientCon
 	r.ldsResourceName = bootstrap.PopulateResourceTemplate(template, endpoint)
 
 	// Register a watch on the xdsClient for the resource name determined above.
-	cancelWatch := watchService(r.xdsClient, r.ldsResourceName, r.handleServiceUpdate, r.logger)
+	cancelWatch := r.watchService()
 	r.logger.Infof("Watch started on resource name %v with xds-client %p", r.ldsResourceName, r.xdsClient)
 	r.cancelWatch = func() {
 		cancelWatch()
@@ -286,6 +286,16 @@ func (r *xdsResolver) run() {
 			r.curConfigSelector = cs
 		}
 	}
+}
+
+func (r *xdsResolver) watchService() (cancel func()) {
+	lw := &listenerWatcher{
+		serviceName: r.ldsResourceName,
+		xdsClient:   r.xdsClient,
+		updateCb:    r.handleServiceUpdate,
+	}
+	lw.ldsCancel = xdsresource.WatchListener(r.xdsClient, r.ldsResourceName, lw)
+	return lw.close
 }
 
 // handleServiceUpdate is the callback which handles service updates. It writes

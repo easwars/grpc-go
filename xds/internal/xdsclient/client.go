@@ -30,7 +30,6 @@ import (
 // (collectively termed as xDS) on a remote management server, to discover
 // various dynamic resources.
 type XDSClient interface {
-	WatchListener(string, func(xdsresource.ListenerUpdate, error)) func()
 	WatchRouteConfig(string, func(xdsresource.RouteConfigUpdate, error)) func()
 	WatchCluster(string, func(xdsresource.ClusterUpdate, error)) func()
 

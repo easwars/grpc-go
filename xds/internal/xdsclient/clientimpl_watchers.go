@@ -22,36 +22,9 @@ import (
 	"fmt"
 	"sync"
 
+	"google.golang.org/grpc/internal/grpcsync"
 	"google.golang.org/grpc/xds/internal/xdsclient/xdsresource"
 )
-
-// This is only required temporarily, while we modify the
-// clientImpl.WatchListener API to be implemented via the wrapper
-// WatchListener() API which calls the WatchResource() API.
-type listenerWatcher struct {
-	resourceName string
-	cb           func(xdsresource.ListenerUpdate, error)
-}
-
-func (l *listenerWatcher) OnUpdate(update *xdsresource.ListenerResourceData) {
-	l.cb(update.Resource, nil)
-}
-
-func (l *listenerWatcher) OnError(err error) {
-	l.cb(xdsresource.ListenerUpdate{}, err)
-}
-
-func (l *listenerWatcher) OnResourceDoesNotExist() {
-	err := xdsresource.NewErrorf(xdsresource.ErrorTypeResourceNotFound, "resource name %q of type Listener not found in received response", l.resourceName)
-	l.cb(xdsresource.ListenerUpdate{}, err)
-}
-
-// WatchListener uses LDS to discover information about the Listener resource
-// identified by resourceName.
-func (c *clientImpl) WatchListener(resourceName string, cb func(xdsresource.ListenerUpdate, error)) (cancel func()) {
-	watcher := &listenerWatcher{resourceName: resourceName, cb: cb}
-	return xdsresource.WatchListener(c, resourceName, watcher)
-}
 
 // This is only required temporarily, while we modify the
 // clientImpl.WatchRouteConfig API to be implemented via the wrapper
@@ -135,15 +108,6 @@ func (c *clientImpl) WatchResource(rType xdsresource.Type, resourceName string, 
 		return func() {}
 	}
 
-	// TODO: replace this with the code does the following when we have
-	// implemented generic watch API on the authority:
-	//  - Parse the resource name and extract the authority.
-	//  - Locate the corresponding authority object and acquire a reference to
-	//    it. If the authority is not found, error out.
-	//  - Call the watchResource() method on the authority.
-	//  - Return a cancel function to cancel the watch on the authority and to
-	//    release the reference.
-
 	// TODO: Make ParseName return an error if parsing fails, and
 	// schedule the OnError callback in that case.
 	n := xdsresource.ParseName(resourceName)
@@ -154,10 +118,10 @@ func (c *clientImpl) WatchResource(rType xdsresource.Type, resourceName string, 
 		return func() {}
 	}
 	cancelF := a.watchResource(rType, n.String(), watcher)
-	return func() {
+	return grpcsync.OnceFunc(func() {
 		cancelF()
 		unref()
-	}
+	})
 }
 
 // A registry of xdsresource.Type implementations indexed by their corresponding

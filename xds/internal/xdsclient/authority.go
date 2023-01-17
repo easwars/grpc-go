@@ -487,7 +487,7 @@ func (a *authority) watchResource(rType xdsresource.Type, resourceName string, w
 		a.serializer.Schedule(func(context.Context) { watcher.OnUpdate(resource) })
 	}
 
-	return func() {
+	return grpcsync.OnceFunc(func() {
 		a.resourcesMu.Lock()
 		defer a.resourcesMu.Unlock()
 
@@ -508,7 +508,7 @@ func (a *authority) watchResource(rType xdsresource.Type, resourceName string, w
 		a.logger.Debugf("Removing last watch for type %q, resource name %q", rType.TypeName(), resourceName)
 		delete(resources, resourceName)
 		a.sendDiscoveryRequestLocked(rType, resources)
-	}
+	})
 }
 
 func (a *authority) handleWatchTimerExpiry(rType xdsresource.Type, resourceName string, state *resourceState) {

@@ -69,7 +69,7 @@ type DrainCallback func(addr net.Addr)
 // XDSClient wraps the methods on the XDSClient which are required by
 // the listenerWrapper.
 type XDSClient interface {
-	WatchListener(string, func(xdsresource.ListenerUpdate, error)) func()
+	WatchResource(rType xdsresource.Type, resourceName string, watcher xdsresource.ResourceWatcher) (cancel func())
 	WatchRouteConfig(string, func(xdsresource.RouteConfigUpdate, error)) func()
 	BootstrapConfig() *bootstrap.Config
 }
@@ -121,7 +121,15 @@ func NewListenerWrapper(params ListenerWrapperParams) (net.Listener, <-chan stru
 	lw.addr, lw.port, _ = net.SplitHostPort(lisAddr)
 
 	lw.rdsHandler = newRDSHandler(lw.xdsC, lw.rdsUpdateCh)
-	lw.cancelWatch = lw.xdsC.WatchListener(lw.name, lw.handleListenerUpdate)
+
+	watcher := &listenerWatcher{resourceName: lw.name, ldsUpdateCh: lw.ldsUpdateCh}
+	cancelWatch := xdsresource.WatchListener(lw.xdsC, lw.name, watcher)
+	lw.logger.Infof("Watch started on resource name %v", lw.name)
+	lw.cancelWatch = func() {
+		cancelWatch()
+		lw.logger.Infof("Watch cancelled on resource name %v", lw.name)
+	}
+
 	go lw.run()
 	return lw, lw.goodUpdate.Done()
 }
@@ -369,6 +377,10 @@ func (l *listenerWrapper) handleRDSUpdate(update rdsHandlerUpdate) {
 }
 
 func (l *listenerWrapper) handleLDSUpdate(update ldsUpdateWithError) {
+	if l.closed.HasFired() {
+		l.logger.Warningf("Resource %q received update: %v with error: %v, after listener was closed", l.name, update.update, update.err)
+		return
+	}
 	if update.err != nil {
 		l.logger.Warningf("Received error for resource %q: %+v", l.name, update.err)
 		if xdsresource.ErrType(update.err) == xdsresource.ErrorTypeResourceNotFound {
@@ -439,4 +451,30 @@ func (l *listenerWrapper) switchMode(fcs *xdsresource.FilterChainManager, newMod
 	if l.modeCallback != nil {
 		l.modeCallback(l.Listener.Addr(), newMode, err)
 	}
+}
+
+type listenerWatcher struct {
+	resourceName string
+	ldsUpdateCh  chan ldsUpdateWithError
+}
+
+func (lw *listenerWatcher) OnUpdate(update *xdsresource.ListenerResourceData) {
+	lw.propagate(ldsUpdateWithError{update: update.Resource})
+}
+
+func (lw *listenerWatcher) OnError(err error) {
+	lw.propagate(ldsUpdateWithError{err: err})
+}
+
+func (lw *listenerWatcher) OnResourceDoesNotExist() {
+	lw.propagate(ldsUpdateWithError{err: xdsresource.NewErrorf(xdsresource.ErrorTypeResourceNotFound, "listener resource %q not found", lw.resourceName)})
+
+}
+
+func (lw *listenerWatcher) propagate(u ldsUpdateWithError) {
+	select {
+	case <-lw.ldsUpdateCh:
+	default:
+	}
+	lw.ldsUpdateCh <- u
 }

@@ -23,8 +23,6 @@ import (
 	"sync"
 	"time"
 
-	"google.golang.org/grpc/internal/grpclog"
-	"google.golang.org/grpc/internal/pretty"
 	"google.golang.org/grpc/xds/internal/clusterspecifier"
 	"google.golang.org/grpc/xds/internal/xdsclient"
 	"google.golang.org/grpc/xds/internal/xdsclient/xdsresource"
@@ -52,152 +50,162 @@ type ldsConfig struct {
 	httpFilterConfig  []xdsresource.HTTPFilter
 }
 
-// watchService uses LDS and RDS to discover information about the provided
-// serviceName.
-//
-// Note that during race (e.g. an xDS response is received while the user is
-// calling cancel()), there's a small window where the callback can be called
-// after the watcher is canceled. The caller needs to handle this case.
-//
-// TODO(easwars): Make this function a method on the xdsResolver type.
-// Currently, there is a single call site for this function, and all arguments
-// passed to it are fields of the xdsResolver type.
-func watchService(c xdsclient.XDSClient, serviceName string, cb func(serviceUpdate, error), logger *grpclog.PrefixLogger) (cancel func()) {
-	w := &serviceUpdateWatcher{
-		logger:      logger,
-		c:           c,
-		serviceName: serviceName,
-		serviceCb:   cb,
-	}
-	w.ldsCancel = c.WatchListener(serviceName, w.handleLDSResp)
-
-	return w.close
-}
-
-// serviceUpdateWatcher handles LDS and RDS response, and calls the service
-// callback at the right time.
-type serviceUpdateWatcher struct {
-	logger      *grpclog.PrefixLogger
-	c           xdsclient.XDSClient
-	serviceName string
-	ldsCancel   func()
-	serviceCb   func(serviceUpdate, error)
-	lastUpdate  serviceUpdate
-
-	mu        sync.Mutex
-	closed    bool
+type routeConfigWatcher struct {
 	rdsName   string
+	updateCb  func(xdsresource.RouteConfigUpdate, error)
 	rdsCancel func()
 }
 
-func (w *serviceUpdateWatcher) handleLDSResp(update xdsresource.ListenerUpdate, err error) {
-	w.logger.Infof("received LDS update: %+v, err: %v", pretty.ToJSON(update), err)
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.closed {
-		return
-	}
-	if err != nil {
-		// We check the error type and do different things. For now, the only
-		// type we check is ResourceNotFound, which indicates the LDS resource
-		// was removed, and besides sending the error to callback, we also
-		// cancel the RDS watch.
-		if xdsresource.ErrType(err) == xdsresource.ErrorTypeResourceNotFound && w.rdsCancel != nil {
-			w.rdsCancel()
-			w.rdsName = ""
-			w.rdsCancel = nil
-			w.lastUpdate = serviceUpdate{}
-		}
-		// The other error cases still return early without canceling the
-		// existing RDS watch.
-		w.serviceCb(serviceUpdate{}, err)
+func (rcw *routeConfigWatcher) OnUpdate(update *xdsresource.RouteConfigResourceData) {
+	rcw.updateCb(update.Resource, nil)
+}
+
+func (rcw *routeConfigWatcher) OnError(err error) {
+	rcw.updateCb(xdsresource.RouteConfigUpdate{}, err)
+}
+func (rcw *routeConfigWatcher) OnResourceDoesNotExist() {
+	rcw.updateCb(xdsresource.RouteConfigUpdate{}, xdsresource.NewErrorf(xdsresource.ErrorTypeResourceNotFound, "route configuration resource %q not found", rcw.rdsName))
+}
+
+func (rcw *routeConfigWatcher) close() {
+	rcw.rdsCancel()
+}
+
+type listenerWatcher struct {
+	// These fields are configured when the watcher is created, and are not
+	// written to subsequently. Hence these need not be protected by a mutex.
+	serviceName string                     // Name of the listener resource being watched.
+	xdsClient   xdsclient.XDSClient        // xDS client to watch route configuration.
+	updateCb    func(serviceUpdate, error) // Callback to push updates.
+	ldsCancel   func()                     // Cancel func for LDS watch.
+
+	// Below fields, which can change based on updates received from the xDS
+	// client, are protected by this mutex.
+	mu         sync.Mutex
+	rcWatcher  *routeConfigWatcher
+	lastUpdate serviceUpdate
+	closed     bool
+}
+
+func (lw *listenerWatcher) OnUpdate(resource *xdsresource.ListenerResourceData) {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+	if lw.closed {
 		return
 	}
 
-	w.lastUpdate.ldsConfig = ldsConfig{
+	update := resource.Resource
+	lw.lastUpdate.ldsConfig = ldsConfig{
 		maxStreamDuration: update.MaxStreamDuration,
 		httpFilterConfig:  update.HTTPFilters,
 	}
 
 	if update.InlineRouteConfig != nil {
-		// If there was an RDS watch, cancel it.
-		w.rdsName = ""
-		if w.rdsCancel != nil {
-			w.rdsCancel()
-			w.rdsCancel = nil
+		// Cancel any existing RDS watch as we have an inline route
+		// configuration now.
+		if lw.rcWatcher != nil {
+			lw.rcWatcher.close()
+			lw.rcWatcher = nil
 		}
 
-		// Handle the inline RDS update as if it's from an RDS watch.
-		w.applyRouteConfigUpdate(*update.InlineRouteConfig)
+		// Handle the inline route configurration as if it's from an RDS watch.
+		lw.applyRouteConfigUpdateLocked(*update.InlineRouteConfig)
 		return
 	}
 
-	// RDS name from update is not an empty string, need RDS to fetch the
-	// routes.
+	// No inline route configuration, need an RDS watch to fetch the routes.
 
-	if w.rdsName == update.RouteConfigName {
-		// If the new RouteConfigName is same as the previous, don't cancel and
-		// restart the RDS watch.
-		//
-		// If the route name did change, then we must wait until the first RDS
-		// update before reporting this LDS config.
-		if w.lastUpdate.virtualHost != nil {
-			// We want to send an update with the new fields from the new LDS
-			// (e.g. max stream duration), and old fields from the previous
-			// RDS.
-			//
-			// But note that this should only happen when virtual host is set,
-			// which means an RDS was received.
-			w.serviceCb(w.lastUpdate, nil)
+	// If the new route configuration name is same as the previous, don't cancel
+	// and restart the RDS watch.
+	if lw.rcWatcher != nil && lw.rcWatcher.rdsName == update.RouteConfigName {
+		// If a previous route configuration was received, send an update with
+		// new listener configuration and old route configuration.
+		if lw.lastUpdate.virtualHost != nil {
+			lw.updateCb(lw.lastUpdate, nil)
 		}
 		return
 	}
-	w.rdsName = update.RouteConfigName
-	if w.rdsCancel != nil {
-		w.rdsCancel()
+
+	// If the route configuration name has changed, we need to cancel the old
+	// watch, register a new one, and wait until the first RDS update before
+	// reporting this LDS config.
+	if lw.rcWatcher != nil {
+		lw.rcWatcher.close()
 	}
-	w.rdsCancel = w.c.WatchRouteConfig(update.RouteConfigName, w.handleRDSResp)
+	lw.rcWatcher = &routeConfigWatcher{
+		rdsName:  update.RouteConfigName,
+		updateCb: lw.handleRouteConfigUpdate,
+	}
+	lw.rcWatcher.rdsCancel = xdsresource.WatchRouteConfig(lw.xdsClient, update.RouteConfigName, lw.rcWatcher)
 }
 
-func (w *serviceUpdateWatcher) applyRouteConfigUpdate(update xdsresource.RouteConfigUpdate) {
-	matchVh := xdsresource.FindBestMatchingVirtualHost(w.serviceName, update.VirtualHosts)
-	if matchVh == nil {
-		// No matching virtual host found.
-		w.serviceCb(serviceUpdate{}, fmt.Errorf("no matching virtual host found for %q", w.serviceName))
+func (lw *listenerWatcher) OnError(err error) {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+	if lw.closed {
 		return
 	}
 
-	w.lastUpdate.virtualHost = matchVh
-	w.lastUpdate.clusterSpecifierPlugins = update.ClusterSpecifierPlugins
-	w.serviceCb(w.lastUpdate, nil)
+	// Do not cancel the existing RDS watch and continue to use the previous
+	// update (if one exists) for non-resource-not-found errors.
+	lw.updateCb(serviceUpdate{}, err)
 }
 
-func (w *serviceUpdateWatcher) handleRDSResp(update xdsresource.RouteConfigUpdate, err error) {
-	w.logger.Infof("received RDS update: %+v, err: %v", pretty.ToJSON(update), err)
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.closed {
+func (lw *listenerWatcher) OnResourceDoesNotExist() {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+	if lw.closed {
 		return
 	}
-	if w.rdsCancel == nil {
+
+	// Cancel the existing RDS watch and stop using the previous update (if one
+	// exists) for resource-not-found errors.
+	if lw.rcWatcher != nil {
+		lw.rcWatcher.close()
+		lw.rcWatcher = nil
+		lw.lastUpdate = serviceUpdate{}
+	}
+	lw.updateCb(serviceUpdate{}, xdsresource.NewErrorf(xdsresource.ErrorTypeResourceNotFound, "listener resource %q not found", lw.serviceName))
+}
+
+func (lw *listenerWatcher) handleRouteConfigUpdate(update xdsresource.RouteConfigUpdate, err error) {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+	if lw.closed {
+		return
+	}
+	if lw.rcWatcher == nil {
 		// This mean only the RDS watch is canceled, can happen if the LDS
 		// resource is removed.
 		return
 	}
 	if err != nil {
-		w.serviceCb(serviceUpdate{}, err)
+		lw.updateCb(serviceUpdate{}, err)
 		return
 	}
-	w.applyRouteConfigUpdate(update)
+	lw.applyRouteConfigUpdateLocked(update)
 }
 
-func (w *serviceUpdateWatcher) close() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.closed = true
-	w.ldsCancel()
-	if w.rdsCancel != nil {
-		w.rdsCancel()
-		w.rdsCancel = nil
+func (lw *listenerWatcher) applyRouteConfigUpdateLocked(update xdsresource.RouteConfigUpdate) {
+	matchVh := xdsresource.FindBestMatchingVirtualHost(lw.serviceName, update.VirtualHosts)
+	if matchVh == nil {
+		// No matching virtual host found.
+		lw.updateCb(serviceUpdate{}, fmt.Errorf("no matching virtual host found for %q", lw.serviceName))
+		return
+	}
+
+	lw.lastUpdate.virtualHost = matchVh
+	lw.lastUpdate.clusterSpecifierPlugins = update.ClusterSpecifierPlugins
+	lw.updateCb(lw.lastUpdate, nil)
+}
+
+func (lw *listenerWatcher) close() {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+	lw.closed = true
+	lw.ldsCancel()
+	if lw.rcWatcher != nil {
+		lw.rcWatcher.close()
+		lw.rcWatcher = nil
 	}
 }
