@@ -101,32 +101,23 @@ func makeLogicalDNSClusterResource(name, dnsHost string, dnsPort uint32) *v3clus
 	}
 }
 
-// setupDNS unregisters the DNS resolver and registers a manual resolver for the
-// same scheme. This allows the test to mock the DNS resolution by supplying the
-// addresses of the test backends.
+// setupAndDialWithDNS overrides the DNS resolver with a fake one which notifies
+// on a channel when built. It calls setupAndDial which performs other common
+// setup action.
 //
 // Returns the following:
-//   - a channel onto which the DNS target being resolved is written to by the
-//     mock DNS resolver
-//   - a channel to notify close of the DNS resolver
-//   - a channel to notify re-resolution requests to the DNS resolver
-//   - a manual resolver which is used to mock the actual DNS resolution
-//   - a cleanup function which re-registers the original DNS resolver
-func setupDNS() (chan resolver.Target, chan struct{}, chan resolver.ResolveNowOptions, *manual.Resolver, func()) {
+// - a ClientConn to the test service
+// - a channel onto which the DNS target being resolved is written to by the
+//   fake DNS resolver
+// - a manual resolver that is registered for the dns scheme
+// - a function to close the ClientConn and the xDS client.
+func setupAndDialWithDNS(t *testing.T, bootstrapContents []byte) (*grpc.ClientConn, chan resolver.Target, *manual.Resolver, func()) {
 	targetCh := make(chan resolver.Target, 1)
-	closeCh := make(chan struct{}, 1)
-	resolveNowCh := make(chan resolver.ResolveNowOptions, 1)
-
 	mr := manual.NewBuilderWithScheme("dns")
 	mr.BuildCallback = func(target resolver.Target, _ resolver.ClientConn, _ resolver.BuildOptions) { targetCh <- target }
-	mr.CloseCallback = func() { closeCh <- struct{}{} }
-	mr.ResolveNowCallback = func(opts resolver.ResolveNowOptions) { resolveNowCh <- opts }
 
-	dnsResolverBuilder := resolver.Get("dns")
-	resolver.UnregisterForTesting("dns")
-	resolver.Register(mr)
-
-	return targetCh, closeCh, resolveNowCh, mr, func() { resolver.Register(dnsResolverBuilder) }
+	cc, cleanup := setupAndDial(t, bootstrapContents, mr)
+	return cc, targetCh, mr, cleanup
 }
 
 // TestAggregateCluster_WithTwoEDSClusters tests the case where the top-level
@@ -323,16 +314,13 @@ func (s) TestAggregateCluster_WithTwoEDSClusters_PrioritiesChange(t *testing.T) 
 // LOGICAL_DNS cluster. The test verifies that RPCs can be made to backends that
 // make up the LOGICAL_DNS cluster.
 func (s) TestAggregateCluster_WithOneDNSCluster(t *testing.T) {
-	dnsTargetCh, _, _, dnsR, cleanup1 := setupDNS()
+	// Start an xDS management server.
+	managementServer, nodeID, bootstrapContents, _, cleanup1 := e2e.SetupManagementServer(t, e2e.ManagementServerOptions{AllowResourceSubset: true})
 	defer cleanup1()
 
-	// Start an xDS management server.
-	managementServer, nodeID, bootstrapContents, _, cleanup2 := e2e.SetupManagementServer(t, e2e.ManagementServerOptions{AllowResourceSubset: true})
-	defer cleanup2()
-
 	// Start two test backends.
-	servers, cleanup3 := startTestServiceBackends(t, 2)
-	defer cleanup3()
+	servers, cleanup2 := startTestServiceBackends(t, 2)
+	defer cleanup2()
 	addrs, _ := backendAddressesAndPorts(t, servers)
 
 	// Configure an aggregate cluster pointing to a single LOGICAL_DNS cluster.
@@ -357,8 +345,8 @@ func (s) TestAggregateCluster_WithOneDNSCluster(t *testing.T) {
 
 	// Create xDS client, configure cds_experimental LB policy with a manual
 	// resolver, and dial the test backends.
-	cc, cleanup := setupAndDial(t, bootstrapContents)
-	defer cleanup()
+	cc, dnsTargetCh, dnsR, cleanup3 := setupAndDialWithDNS(t, bootstrapContents)
+	defer cleanup3()
 
 	// Ensure that the DNS resolver is started for the expected target.
 	select {
@@ -391,13 +379,10 @@ func (s) TestAggregateCluster_WithOneDNSCluster(t *testing.T) {
 // cluster. The test verifies that RPCs fail until both clusters are resolved to
 // endpoints, and RPCs are routed to the higher priority EDS cluster.
 func (s) TestAggregateCluster_WithEDSAndDNS(t *testing.T) {
-	dnsTargetCh, _, _, dnsR, cleanup1 := setupDNS()
-	defer cleanup1()
-
 	// Start an xDS management server that pushes the name of the requested EDS
 	// resource onto a channel.
 	edsResourceCh := make(chan string, 1)
-	managementServer, nodeID, bootstrapContents, _, cleanup2 := e2e.SetupManagementServer(t, e2e.ManagementServerOptions{
+	managementServer, nodeID, bootstrapContents, _, cleanup1 := e2e.SetupManagementServer(t, e2e.ManagementServerOptions{
 		OnStreamRequest: func(_ int64, req *v3discoverypb.DiscoveryRequest) error {
 			if req.GetTypeUrl() != version.V3EndpointsURL {
 				return nil
@@ -412,13 +397,13 @@ func (s) TestAggregateCluster_WithEDSAndDNS(t *testing.T) {
 		},
 		AllowResourceSubset: true,
 	})
-	defer cleanup2()
+	defer cleanup1()
 
 	// Start two test backends and extract their host and port. The first
 	// backend is used for the EDS cluster and the second backend is used for
 	// the LOGICAL_DNS cluster.
-	servers, cleanup3 := startTestServiceBackends(t, 2)
-	defer cleanup3()
+	servers, cleanup2 := startTestServiceBackends(t, 2)
+	defer cleanup2()
 	addrs, ports := backendAddressesAndPorts(t, servers)
 
 	// Configure an aggregate cluster pointing to an EDS and DNS cluster. Also
@@ -447,8 +432,8 @@ func (s) TestAggregateCluster_WithEDSAndDNS(t *testing.T) {
 
 	// Create xDS client, configure cds_experimental LB policy with a manual
 	// resolver, and dial the test backends.
-	cc, cleanup := setupAndDial(t, bootstrapContents)
-	defer cleanup()
+	cc, dnsTargetCh, dnsR, cleanup3 := setupAndDialWithDNS(t, bootstrapContents)
+	defer cleanup3()
 
 	// Ensure that an EDS request is sent for the expected resource name.
 	select {
@@ -501,18 +486,15 @@ func (s) TestAggregateCluster_WithEDSAndDNS(t *testing.T) {
 // cluster. The test verifies that RPCs are successful, this time to backends in
 // the DNS cluster.
 func (s) TestAggregateCluster_SwitchEDSAndDNS(t *testing.T) {
-	dnsTargetCh, _, _, dnsR, cleanup1 := setupDNS()
-	defer cleanup1()
-
 	// Start an xDS management server.
-	managementServer, nodeID, bootstrapContents, _, cleanup2 := e2e.SetupManagementServer(t, e2e.ManagementServerOptions{AllowResourceSubset: true})
-	defer cleanup2()
+	managementServer, nodeID, bootstrapContents, _, cleanup1 := e2e.SetupManagementServer(t, e2e.ManagementServerOptions{AllowResourceSubset: true})
+	defer cleanup1()
 
 	// Start two test backends and extract their host and port. The first
 	// backend is used for the EDS cluster and the second backend is used for
 	// the LOGICAL_DNS cluster.
-	servers, cleanup3 := startTestServiceBackends(t, 2)
-	defer cleanup3()
+	servers, cleanup2 := startTestServiceBackends(t, 2)
+	defer cleanup2()
 	addrs, ports := backendAddressesAndPorts(t, servers)
 
 	// Configure an aggregate cluster pointing to a single EDS cluster. Also,
@@ -541,8 +523,8 @@ func (s) TestAggregateCluster_SwitchEDSAndDNS(t *testing.T) {
 
 	// Create xDS client, configure cds_experimental LB policy with a manual
 	// resolver, and dial the test backends.
-	cc, cleanup := setupAndDial(t, bootstrapContents)
-	defer cleanup()
+	cc, dnsTargetCh, dnsR, cleanup3 := setupAndDialWithDNS(t, bootstrapContents)
+	defer cleanup3()
 
 	// Ensure that the RPC is routed to the appropriate backend.
 	client := testgrpc.NewTestServiceClient(cc)
@@ -601,16 +583,13 @@ func (s) TestAggregateCluster_SwitchEDSAndDNS(t *testing.T) {
 // still successful. This is the expected behavior because the cluster resolver
 // policy eats errors from DNS Resolver after it has returned an error.
 func (s) TestAggregateCluster_BadEDS_GoodToBadDNS(t *testing.T) {
-	dnsTargetCh, _, _, dnsR, cleanup1 := setupDNS()
+	// Start an xDS management server.
+	managementServer, nodeID, bootstrapContents, _, cleanup1 := e2e.SetupManagementServer(t, e2e.ManagementServerOptions{AllowResourceSubset: true})
 	defer cleanup1()
 
-	// Start an xDS management server.
-	managementServer, nodeID, bootstrapContents, _, cleanup2 := e2e.SetupManagementServer(t, e2e.ManagementServerOptions{AllowResourceSubset: true})
-	defer cleanup2()
-
 	// Start two test backends.
-	servers, cleanup3 := startTestServiceBackends(t, 2)
-	defer cleanup3()
+	servers, cleanup2 := startTestServiceBackends(t, 2)
+	defer cleanup2()
 	addrs, _ := backendAddressesAndPorts(t, servers)
 
 	// Configure an aggregate cluster pointing to an EDS and LOGICAL_DNS
@@ -641,8 +620,8 @@ func (s) TestAggregateCluster_BadEDS_GoodToBadDNS(t *testing.T) {
 
 	// Create xDS client, configure cds_experimental LB policy with a manual
 	// resolver, and dial the test backends.
-	cc, cleanup := setupAndDial(t, bootstrapContents)
-	defer cleanup()
+	cc, dnsTargetCh, dnsR, cleanup3 := setupAndDialWithDNS(t, bootstrapContents)
+	defer cleanup3()
 
 	// Make an RPC with a short deadline. We expect this RPC to not succeed
 	// because the EDS resource came back with no endpoints, and we are yet to
@@ -706,16 +685,13 @@ func (s) TestAggregateCluster_BadEDS_GoodToBadDNS(t *testing.T) {
 // the DNS resolver pushes an update, the test verifies that we switch to the
 // DNS cluster and can make a successful RPC.
 func (s) TestAggregateCluster_BadEDSFromError_GoodToBadDNS(t *testing.T) {
-	dnsTargetCh, _, _, dnsR, cleanup1 := setupDNS()
+	// Start an xDS management server.
+	managementServer, nodeID, bootstrapContents, _, cleanup1 := e2e.SetupManagementServer(t, e2e.ManagementServerOptions{AllowResourceSubset: true})
 	defer cleanup1()
 
-	// Start an xDS management server.
-	managementServer, nodeID, bootstrapContents, _, cleanup2 := e2e.SetupManagementServer(t, e2e.ManagementServerOptions{AllowResourceSubset: true})
-	defer cleanup2()
-
 	// Start two test backends.
-	servers, cleanup3 := startTestServiceBackends(t, 2)
-	defer cleanup3()
+	servers, cleanup2 := startTestServiceBackends(t, 2)
+	defer cleanup2()
 	addrs, _ := backendAddressesAndPorts(t, servers)
 
 	// Configure an aggregate cluster pointing to an EDS and LOGICAL_DNS
@@ -753,8 +729,8 @@ func (s) TestAggregateCluster_BadEDSFromError_GoodToBadDNS(t *testing.T) {
 
 	// Create xDS client, configure cds_experimental LB policy with a manual
 	// resolver, and dial the test backends.
-	cc, cleanup := setupAndDial(t, bootstrapContents)
-	defer cleanup()
+	cc, dnsTargetCh, dnsR, cleanup3 := setupAndDialWithDNS(t, bootstrapContents)
+	defer cleanup3()
 
 	// Ensure that the DNS resolver is started for the expected target.
 	select {
@@ -781,16 +757,13 @@ func (s) TestAggregateCluster_BadEDSFromError_GoodToBadDNS(t *testing.T) {
 // good update, this test verifies the cluster_resolver balancer correctly falls
 // back from the LOGICAL_DNS cluster to the EDS cluster.
 func (s) TestAggregateCluster_BadDNS_GoodEDS(t *testing.T) {
-	dnsTargetCh, _, _, dnsR, cleanup1 := setupDNS()
+	// Start an xDS management server.
+	managementServer, nodeID, bootstrapContents, _, cleanup1 := e2e.SetupManagementServer(t, e2e.ManagementServerOptions{AllowResourceSubset: true})
 	defer cleanup1()
 
-	// Start an xDS management server.
-	managementServer, nodeID, bootstrapContents, _, cleanup2 := e2e.SetupManagementServer(t, e2e.ManagementServerOptions{AllowResourceSubset: true})
-	defer cleanup2()
-
 	// Start two test backends.
-	servers, cleanup3 := startTestServiceBackends(t, 2)
-	defer cleanup3()
+	servers, cleanup2 := startTestServiceBackends(t, 2)
+	defer cleanup2()
 	addrs, ports := backendAddressesAndPorts(t, servers)
 
 	// Configure an aggregate cluster pointing to an LOGICAL_DNS and EDS
@@ -819,8 +792,8 @@ func (s) TestAggregateCluster_BadDNS_GoodEDS(t *testing.T) {
 
 	// Create xDS client, configure cds_experimental LB policy with a manual
 	// resolver, and dial the test backends.
-	cc, cleanup := setupAndDial(t, bootstrapContents)
-	defer cleanup()
+	cc, dnsTargetCh, dnsR, cleanup3 := setupAndDialWithDNS(t, bootstrapContents)
+	defer cleanup3()
 
 	// Ensure that the DNS resolver is started for the expected target.
 	select {
@@ -855,12 +828,9 @@ func (s) TestAggregateCluster_BadDNS_GoodEDS(t *testing.T) {
 // error, the test verifies that RPCs fail with the error triggered by the DNS
 // Discovery Mechanism (from sending an empty address list down).
 func (s) TestAggregateCluster_BadEDS_BadDNS(t *testing.T) {
-	dnsTargetCh, _, _, dnsR, cleanup1 := setupDNS()
-	defer cleanup1()
-
 	// Start an xDS management server.
-	managementServer, nodeID, bootstrapContents, _, cleanup2 := e2e.SetupManagementServer(t, e2e.ManagementServerOptions{AllowResourceSubset: true})
-	defer cleanup2()
+	managementServer, nodeID, bootstrapContents, _, cleanup1 := e2e.SetupManagementServer(t, e2e.ManagementServerOptions{AllowResourceSubset: true})
+	defer cleanup1()
 
 	// Configure an aggregate cluster pointing to an EDS and LOGICAL_DNS
 	// cluster. Also configure an empty endpoints resource for the EDS cluster
@@ -890,8 +860,8 @@ func (s) TestAggregateCluster_BadEDS_BadDNS(t *testing.T) {
 
 	// Create xDS client, configure cds_experimental LB policy with a manual
 	// resolver, and dial the test backends.
-	cc, cleanup := setupAndDial(t, bootstrapContents)
-	defer cleanup()
+	cc, dnsTargetCh, dnsR, cleanup2 := setupAndDialWithDNS(t, bootstrapContents)
+	defer cleanup2()
 
 	// Make an RPC with a short deadline. We expect this RPC to not succeed
 	// because the EDS resource came back with no endpoints, and we are yet to
@@ -938,18 +908,15 @@ func (s) TestAggregateCluster_BadEDS_BadDNS(t *testing.T) {
 // previously received good update and that RPCs still get routed to the EDS
 // cluster.
 func (s) TestAggregateCluster_NoFallback_EDSNackedWithPreviousGoodUpdate(t *testing.T) {
-	dnsTargetCh, _, _, dnsR, cleanup1 := setupDNS()
-	defer cleanup1()
-
 	// Start an xDS management server.
-	mgmtServer, nodeID, bootstrapContents, _, cleanup2 := e2e.SetupManagementServer(t, e2e.ManagementServerOptions{AllowResourceSubset: true})
-	defer cleanup2()
+	mgmtServer, nodeID, bootstrapContents, _, cleanup1 := e2e.SetupManagementServer(t, e2e.ManagementServerOptions{AllowResourceSubset: true})
+	defer cleanup1()
 
 	// Start two test backends and extract their host and port. The first
 	// backend is used for the EDS cluster and the second backend is used for
 	// the LOGICAL_DNS cluster.
-	servers, cleanup3 := startTestServiceBackends(t, 2)
-	defer cleanup3()
+	servers, cleanup2 := startTestServiceBackends(t, 2)
+	defer cleanup2()
 	addrs, ports := backendAddressesAndPorts(t, servers)
 
 	// Configure an aggregate cluster pointing to an EDS and DNS cluster. Also
@@ -978,8 +945,8 @@ func (s) TestAggregateCluster_NoFallback_EDSNackedWithPreviousGoodUpdate(t *test
 
 	// Create xDS client, configure cds_experimental LB policy with a manual
 	// resolver, and dial the test backends.
-	cc, cleanup := setupAndDial(t, bootstrapContents)
-	defer cleanup()
+	cc, dnsTargetCh, dnsR, cleanup3 := setupAndDialWithDNS(t, bootstrapContents)
+	defer cleanup3()
 
 	// Ensure that the DNS resolver is started for the expected target.
 	select {
@@ -1033,18 +1000,15 @@ func (s) TestAggregateCluster_NoFallback_EDSNackedWithPreviousGoodUpdate(t *test
 // the LOGICAL_DNS cluster, because it is supposed to treat the bad EDS response
 // as though it received an update with no endpoints.
 func (s) TestAggregateCluster_Fallback_EDSNackedWithoutPreviousGoodUpdate(t *testing.T) {
-	dnsTargetCh, _, _, dnsR, cleanup1 := setupDNS()
-	defer cleanup1()
-
 	// Start an xDS management server.
-	mgmtServer, nodeID, bootstrapContents, _, cleanup2 := e2e.SetupManagementServer(t, e2e.ManagementServerOptions{AllowResourceSubset: true})
-	defer cleanup2()
+	mgmtServer, nodeID, bootstrapContents, _, cleanup1 := e2e.SetupManagementServer(t, e2e.ManagementServerOptions{AllowResourceSubset: true})
+	defer cleanup1()
 
 	// Start two test backends and extract their host and port. The first
 	// backend is used for the EDS cluster and the second backend is used for
 	// the LOGICAL_DNS cluster.
-	servers, cleanup3 := startTestServiceBackends(t, 2)
-	defer cleanup3()
+	servers, cleanup2 := startTestServiceBackends(t, 2)
+	defer cleanup2()
 	addrs, ports := backendAddressesAndPorts(t, servers)
 
 	// Configure an aggregate cluster pointing to an EDS and DNS cluster.
@@ -1078,8 +1042,8 @@ func (s) TestAggregateCluster_Fallback_EDSNackedWithoutPreviousGoodUpdate(t *tes
 
 	// Create xDS client, configure cds_experimental LB policy with a manual
 	// resolver, and dial the test backends.
-	cc, cleanup := setupAndDial(t, bootstrapContents)
-	defer cleanup()
+	cc, dnsTargetCh, dnsR, cleanup3 := setupAndDialWithDNS(t, bootstrapContents)
+	defer cleanup3()
 
 	// Ensure that the DNS resolver is started for the expected target.
 	select {
@@ -1112,12 +1076,9 @@ func (s) TestAggregateCluster_Fallback_EDSNackedWithoutPreviousGoodUpdate(t *tes
 // cluster. The test verifies that the cluster_resolver LB policy falls back to
 // the LOGICAL_DNS cluster in this case.
 func (s) TestAggregateCluster_Fallback_EDS_ResourceNotFound(t *testing.T) {
-	dnsTargetCh, _, _, dnsR, cleanup1 := setupDNS()
-	defer cleanup1()
-
 	// Start an xDS management server.
-	mgmtServer, nodeID, _, _, cleanup2 := e2e.SetupManagementServer(t, e2e.ManagementServerOptions{AllowResourceSubset: true})
-	defer cleanup2()
+	mgmtServer, nodeID, _, _, cleanup1 := e2e.SetupManagementServer(t, e2e.ManagementServerOptions{AllowResourceSubset: true})
+	defer cleanup1()
 
 	// Start a test backend for the LOGICAL_DNS cluster.
 	server := stubserver.StartTestService(t, nil)
@@ -1171,8 +1132,13 @@ func (s) TestAggregateCluster_Fallback_EDS_ResourceNotFound(t *testing.T) {
 	scpr := internal.ParseServiceConfig.(func(string) *serviceconfig.ParseResult)(jsonSC)
 	r.InitialState(xdsclient.SetClient(resolver.State{ServiceConfig: scpr}, xdsClient))
 
+	// Override the DNS resolver with a fake one.
+	dnsTargetCh := make(chan resolver.Target, 1)
+	dnsR := manual.NewBuilderWithScheme("dns")
+	dnsR.BuildCallback = func(target resolver.Target, _ resolver.ClientConn, _ resolver.BuildOptions) { dnsTargetCh <- target }
+
 	// Create a ClientConn.
-	cc, err := grpc.Dial(r.Scheme()+":///test.service", grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithResolvers(r))
+	cc, err := grpc.Dial(r.Scheme()+":///test.service", grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithResolvers(r, dnsR))
 	if err != nil {
 		t.Fatalf("failed to dial local test server: %v", err)
 	}

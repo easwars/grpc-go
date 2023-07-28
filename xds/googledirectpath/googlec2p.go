@@ -98,7 +98,9 @@ func (c2pResolverBuilder) Build(t resolver.Target, cc resolver.ClientConn, opts 
 	if !runDirectPath() {
 		// If not xDS, fallback to DNS.
 		t.URL.Scheme = dnsName
-		return resolver.Get(dnsName).Build(t, cc, opts)
+		// The dns resolver is registered by the grpc package. So, this call to
+		// get the resolver builder is never expected to return nil.
+		return cc.ResolverBuilder(dnsName).Build(t, cc, opts)
 	}
 
 	// Note that the following calls to getZone() and getIPv6Capable() does I/O,
@@ -153,7 +155,10 @@ func (c2pResolverBuilder) Build(t resolver.Target, cc resolver.ClientConn, opts 
 			},
 		}
 	}
-	xdsR, err := resolver.Get(xdsName).Build(t, cc, opts)
+	// The xds resolver is registered by the xds package, for which we have a
+	// blank import at the top. So, this call to get the resolver builder is
+	// never expected to return nil.
+	xdsR, err := cc.ResolverBuilder(xdsName).Build(t, cc, opts)
 	if err != nil {
 		close()
 		return nil, err

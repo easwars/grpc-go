@@ -65,9 +65,11 @@ import (
 //   - creates a  manual resolver that configures `cds_experimental` as the
 //     top-level LB policy.
 //   - creates a ClientConn to talk to the test backends
+//   - passes the additional resolvers to the ClientConn as a local registry
 //
-// Returns a function to close the ClientConn and the xDS client.
-func setupAndDial(t *testing.T, bootstrapContents []byte) (*grpc.ClientConn, func()) {
+// Returns a ClientConn to the test service and a cleanup function that closes
+// the ClientConn and the xDS client.
+func setupAndDial(t *testing.T, bootstrapContents []byte, resolvers ...resolver.Builder) (*grpc.ClientConn, func()) {
 	t.Helper()
 
 	// Create an xDS client for use by the cluster_resolver LB policy.
@@ -91,7 +93,7 @@ func setupAndDial(t *testing.T, bootstrapContents []byte) (*grpc.ClientConn, fun
 	r.InitialState(xdsclient.SetClient(resolver.State{ServiceConfig: scpr}, xdsC))
 
 	// Create a ClientConn and make a successful RPC.
-	cc, err := grpc.Dial(r.Scheme()+":///test.service", grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithResolvers(r))
+	cc, err := grpc.Dial(r.Scheme()+":///test.service", grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithResolvers(append(resolvers, r)...))
 	if err != nil {
 		xdsClose()
 		t.Fatalf("Failed to dial local test server: %v", err)

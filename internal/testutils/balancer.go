@@ -177,6 +177,16 @@ func (tcc *TestClientConn) Target() string {
 	panic("not implemented")
 }
 
+// ResolverBuilder panics.
+func (tcc *TestClientConn) ResolverBuilder(scheme string) resolver.Builder {
+	panic("not implemented")
+}
+
+// BalancerBuilder panics.
+func (tcc *TestClientConn) BalancerBuilder(name string) balancer.Builder {
+	panic("not implemented")
+}
+
 // WaitForErrPicker waits until an error picker is pushed to this ClientConn.
 // Returns error if the provided context expires or a non-error picker is pushed
 // to the ClientConn.

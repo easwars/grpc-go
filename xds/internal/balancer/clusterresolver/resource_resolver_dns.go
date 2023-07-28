@@ -44,6 +44,7 @@ type dnsDiscoveryMechanism struct {
 	target           string
 	topLevelResolver topLevelResolver
 	dnsR             resolver.Resolver
+	getResolver      func(string) resolver.Builder
 	logger           *grpclog.PrefixLogger
 
 	mu             sync.Mutex
@@ -67,10 +68,11 @@ type dnsDiscoveryMechanism struct {
 //
 // The `dnsR` field is unset if we run into erros in this function. Therefore, a
 // nil check is required wherever we access that field.
-func newDNSResolver(target string, topLevelResolver topLevelResolver, logger *grpclog.PrefixLogger) *dnsDiscoveryMechanism {
+func newDNSResolver(target string, topLevelResolver topLevelResolver, getResolver func(string) resolver.Builder, logger *grpclog.PrefixLogger) *dnsDiscoveryMechanism {
 	ret := &dnsDiscoveryMechanism{
 		target:           target,
 		topLevelResolver: topLevelResolver,
+		getResolver:      getResolver,
 		logger:           logger,
 	}
 	u, err := url.Parse("dns:///" + target)
@@ -83,7 +85,10 @@ func newDNSResolver(target string, topLevelResolver topLevelResolver, logger *gr
 		return ret
 	}
 
-	r, err := newDNS(resolver.Target{URL: *u}, ret, resolver.BuildOptions{})
+	// The dns resolver is registered by the grpc package. So, this call to get
+	// the resolver builder is never expected to return nil.
+	rb := getResolver("dns")
+	r, err := rb.Build(resolver.Target{URL: *u}, ret, resolver.BuildOptions{})
 	if err != nil {
 		if ret.logger.V(2) {
 			ret.logger.Infof("Failed to build DNS resolver for target %q: %v", target, err)
@@ -177,4 +182,8 @@ func (dr *dnsDiscoveryMechanism) NewServiceConfig(string) {
 
 func (dr *dnsDiscoveryMechanism) ParseServiceConfig(string) *serviceconfig.ParseResult {
 	return &serviceconfig.ParseResult{Err: fmt.Errorf("service config not supported")}
+}
+
+func (dr *dnsDiscoveryMechanism) ResolverBuilder(scheme string) resolver.Builder {
+	return dr.getResolver(scheme)
 }

@@ -363,6 +363,14 @@ func (ccb *ccBalancerWrapper) Target() string {
 	return ccb.cc.target
 }
 
+func (ccb *ccBalancerWrapper) ResolverBuilder(scheme string) resolver.Builder {
+	return ccb.cc.getResolver(scheme)
+}
+
+func (ccb *ccBalancerWrapper) BalancerBuilder(name string) balancer.Builder {
+	return ccb.cc.getBalancer(name)
+}
+
 // acBalancerWrapper is a wrapper on top of ac for balancers.
 // It implements balancer.SubConn interface.
 type acBalancerWrapper struct {

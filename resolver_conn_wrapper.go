@@ -31,10 +31,13 @@ import (
 	"google.golang.org/grpc/serviceconfig"
 )
 
-// resolverStateUpdater wraps the single method used by ccResolverWrapper to
-// report a state update from the actual resolver implementation.
-type resolverStateUpdater interface {
-	updateResolverState(s resolver.State, err error) error
+// clientConnInterface bundles together the methods on the ClientConn that are
+// used by the ccResolverWrapper. This follows the principle of least privilege,
+// giving the resolver wrapper only the required level of access to the
+// ClientConn, to be able to perform its job.
+type clientConnInterface interface {
+	updateResolverState(resolver.State, error) error
+	getResolver(string) resolver.Builder
 }
 
 // ccResolverWrapper is a wrapper on top of cc for resolvers.
@@ -42,7 +45,7 @@ type resolverStateUpdater interface {
 type ccResolverWrapper struct {
 	// The following fields are initialized when the wrapper is created and are
 	// read-only afterwards, and therefore can be accessed without a mutex.
-	cc                  resolverStateUpdater
+	cc                  clientConnInterface
 	channelzID          *channelz.Identifier
 	ignoreServiceConfig bool
 	opts                ccResolverWrapperOpts
@@ -72,7 +75,7 @@ type ccResolverWrapperOpts struct {
 
 // newCCResolverWrapper uses the resolver.Builder to build a Resolver and
 // returns a ccResolverWrapper object which wraps the newly built resolver.
-func newCCResolverWrapper(cc resolverStateUpdater, opts ccResolverWrapperOpts) (*ccResolverWrapper, error) {
+func newCCResolverWrapper(cc clientConnInterface, opts ccResolverWrapperOpts) (*ccResolverWrapper, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ccr := &ccResolverWrapper{
 		cc:                  cc,
@@ -236,4 +239,8 @@ func (ccr *ccResolverWrapper) addChannelzTraceEvent(s resolver.State) {
 		updates = append(updates, "resolver returned new addresses")
 	}
 	channelz.Infof(logger, ccr.channelzID, "Resolver state updated: %s (%v)", pretty.ToJSON(s), strings.Join(updates, "; "))
+}
+
+func (ccr *ccResolverWrapper) ResolverBuilder(scheme string) resolver.Builder {
+	return ccr.cc.getResolver(scheme)
 }

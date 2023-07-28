@@ -176,6 +176,9 @@ type ClientConn interface {
 	//
 	// Deprecated: Use the Target field in the BuildOptions instead.
 	Target() string
+
+	ResolverBuilder(scheme string) resolver.Builder
+	BalancerBuilder(name string) Builder
 }
 
 // BuildOptions contains additional information for Build.
@@ -206,7 +209,9 @@ type BuildOptions struct {
 	// Target contains the parsed address info of the dial target. It is the
 	// same resolver.Target as passed to the resolver. See the documentation for
 	// the resolver.Target type for details about what it contains.
-	Target resolver.Target
+	Target             resolver.Target
+	GetResolverBuilder func(name string) resolver.Builder
+	GetBalancerBuilder func(name string) Builder
 }
 
 // Builder creates a balancer.

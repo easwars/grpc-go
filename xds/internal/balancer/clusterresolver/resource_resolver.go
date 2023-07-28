@@ -176,7 +176,7 @@ func (rr *resourceResolver) updateMechanisms(mechanisms []DiscoveryMechanism) {
 		case DiscoveryMechanismTypeEDS:
 			resolver = newEDSResolver(dmKey.name, rr.parent.xdsClient, rr, rr.logger)
 		case DiscoveryMechanismTypeLogicalDNS:
-			resolver = newDNSResolver(dmKey.name, rr, rr.logger)
+			resolver = newDNSResolver(dmKey.name, rr, rr.parent.cc.ResolverBuilder, rr.logger)
 		}
 		dmAndResolver = discoveryMechanismAndResolver{
 			dm:           dm,

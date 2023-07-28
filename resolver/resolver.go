@@ -219,6 +219,8 @@ type ClientConn interface {
 	// ParseServiceConfig parses the provided service config and returns an
 	// object that provides the parsed config.
 	ParseServiceConfig(serviceConfigJSON string) *serviceconfig.ParseResult
+
+	ResolverBuilder(scheme string) Builder
 }
 
 // Target represents a target for gRPC, as specified in:

@@ -382,3 +382,11 @@ func (bw *balancerWrapper) UpdateAddresses(sc balancer.SubConn, addrs []resolver
 func (bw *balancerWrapper) Target() string {
 	return bw.gsb.cc.Target()
 }
+
+func (bw *balancerWrapper) ResolverBuilder(scheme string) resolver.Builder {
+	return bw.gsb.cc.ResolverBuilder(scheme)
+}
+
+func (bw *balancerWrapper) BalancerBuilder(name string) balancer.Builder {
+	return bw.gsb.cc.BalancerBuilder(name)
+}

@@ -59,38 +59,25 @@ var (
 	testXDSResolver = &emptyResolver{scheme: "xds"}
 )
 
-func replaceResolvers() func() {
-	var registerForTesting bool
-	if resolver.Get(c2pScheme) == nil {
-		// If env var to enable c2p is not set, the resolver isn't registered.
-		// Need to register and unregister in defer.
-		registerForTesting = true
-		resolver.Register(&c2pResolverBuilder{})
-	}
-	oldDNS := resolver.Get("dns")
-	resolver.Register(testDNSResolver)
-	oldXDS := resolver.Get("xds")
-	resolver.Register(testXDSResolver)
-	return func() {
-		if oldDNS != nil {
-			resolver.Register(oldDNS)
-		} else {
-			resolver.UnregisterForTesting("dns")
-		}
-		if oldXDS != nil {
-			resolver.Register(oldXDS)
-		} else {
-			resolver.UnregisterForTesting("xds")
-		}
-		if registerForTesting {
-			resolver.UnregisterForTesting(c2pScheme)
-		}
+type fakeResolverClientConn struct {
+	resolver.ClientConn
+}
+
+func (fr *fakeResolverClientConn) ResolverBuilder(scheme string) resolver.Builder {
+	switch scheme {
+	case c2pScheme:
+		return &c2pResolverBuilder{}
+	case "dns":
+		return testDNSResolver
+	case "xds":
+		return testXDSResolver
+	default:
+		return nil
 	}
 }
 
 // Test that when bootstrap env is set, fallback to DNS.
 func TestBuildWithBootstrapEnvSet(t *testing.T) {
-	defer replaceResolvers()()
 	builder := resolver.Get(c2pScheme)
 
 	for i, envP := range []*string{&envconfig.XDSBootstrapFileName, &envconfig.XDSBootstrapFileContent} {
@@ -101,7 +88,7 @@ func TestBuildWithBootstrapEnvSet(t *testing.T) {
 			defer func() { *envP = oldEnv }()
 
 			// Build should return DNS, not xDS.
-			r, err := builder.Build(resolver.Target{}, nil, resolver.BuildOptions{})
+			r, err := builder.Build(resolver.Target{}, &fakeResolverClientConn{}, resolver.BuildOptions{})
 			if err != nil {
 				t.Fatalf("failed to build resolver: %v", err)
 			}
@@ -114,7 +101,6 @@ func TestBuildWithBootstrapEnvSet(t *testing.T) {
 
 // Test that when not on GCE, fallback to DNS.
 func TestBuildNotOnGCE(t *testing.T) {
-	defer replaceResolvers()()
 	builder := resolver.Get(c2pScheme)
 
 	oldOnGCE := onGCE
@@ -122,7 +108,7 @@ func TestBuildNotOnGCE(t *testing.T) {
 	defer func() { onGCE = oldOnGCE }()
 
 	// Build should return DNS, not xDS.
-	r, err := builder.Build(resolver.Target{}, nil, resolver.BuildOptions{})
+	r, err := builder.Build(resolver.Target{}, &fakeResolverClientConn{}, resolver.BuildOptions{})
 	if err != nil {
 		t.Fatalf("failed to build resolver: %v", err)
 	}
@@ -142,7 +128,6 @@ func (c *testXDSClient) Close() {
 
 // Test that when xDS is built, the client is built with the correct config.
 func TestBuildXDS(t *testing.T) {
-	defer replaceResolvers()()
 	builder := resolver.Get(c2pScheme)
 
 	oldOnGCE := onGCE
@@ -187,7 +172,7 @@ func TestBuildXDS(t *testing.T) {
 			defer func() { newClientWithConfig = oldNewClient }()
 
 			// Build should return DNS, not xDS.
-			r, err := builder.Build(resolver.Target{}, nil, resolver.BuildOptions{})
+			r, err := builder.Build(resolver.Target{}, &fakeResolverClientConn{}, resolver.BuildOptions{})
 			if err != nil {
 				t.Fatalf("failed to build resolver: %v", err)
 			}

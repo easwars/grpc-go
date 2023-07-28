@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc/backoff"
+	"google.golang.org/grpc/balancer"
 	"google.golang.org/grpc/channelz"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -77,6 +78,7 @@ type dialOptions struct {
 	defaultServiceConfig        *ServiceConfig // defaultServiceConfig is parsed from defaultServiceConfigRawJSON.
 	defaultServiceConfigRawJSON *string
 	resolvers                   []resolver.Builder
+	balancers                   []balancer.Builder
 	idleTimeout                 time.Duration
 	recvBufferPool              SharedBufferPool
 }
@@ -670,6 +672,13 @@ func withMinConnectDeadline(f func() time.Duration) DialOption {
 func WithResolvers(rs ...resolver.Builder) DialOption {
 	return newFuncDialOption(func(o *dialOptions) {
 		o.resolvers = append(o.resolvers, rs...)
+	})
+}
+
+// WithBalancers TBD.
+func WithBalancers(bs ...balancer.Builder) DialOption {
+	return newFuncDialOption(func(o *dialOptions) {
+		o.balancers = append(o.balancers, bs...)
 	})
 }
 

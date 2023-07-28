@@ -360,13 +360,14 @@ func (cc *ClientConn) exitIdleMode() error {
 	}
 	if cc.balancerWrapper == nil {
 		cc.balancerWrapper = newCCBalancerWrapper(cc, balancer.BuildOptions{
-			DialCreds:        credsClone,
-			CredsBundle:      cc.dopts.copts.CredsBundle,
-			Dialer:           cc.dopts.copts.Dialer,
-			Authority:        cc.authority,
-			CustomUserAgent:  cc.dopts.copts.UserAgent,
-			ChannelzParentID: cc.channelzID,
-			Target:           cc.parsedTarget,
+			DialCreds:          credsClone,
+			CredsBundle:        cc.dopts.copts.CredsBundle,
+			Dialer:             cc.dopts.copts.Dialer,
+			Authority:          cc.authority,
+			CustomUserAgent:    cc.dopts.copts.UserAgent,
+			ChannelzParentID:   cc.channelzID,
+			Target:             cc.parsedTarget,
+			GetResolverBuilder: cc.getResolver,
 		})
 	} else {
 		cc.balancerWrapper.exitIdleMode()
@@ -1762,6 +1763,15 @@ func (cc *ClientConn) getResolver(scheme string) resolver.Builder {
 		}
 	}
 	return resolver.Get(scheme)
+}
+
+func (cc *ClientConn) getBalancer(name string) balancer.Builder {
+	for _, bb := range cc.dopts.balancers {
+		if name == bb.Name() {
+			return bb
+		}
+	}
+	return balancer.Get(name)
 }
 
 func (cc *ClientConn) updateConnectionError(err error) {

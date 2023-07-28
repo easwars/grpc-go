@@ -594,6 +594,14 @@ func (b *outlierDetectionBalancer) Target() string {
 	return b.cc.Target()
 }
 
+func (b *outlierDetectionBalancer) ResolverBuilder(scheme string) resolver.Builder {
+	return b.cc.ResolverBuilder(scheme)
+}
+
+func (b *outlierDetectionBalancer) BalancerBuilder(name string) balancer.Builder {
+	return b.cc.BalancerBuilder(name)
+}
+
 func max(x, y time.Duration) time.Duration {
 	if x < y {
 		return y
