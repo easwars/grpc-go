@@ -20,6 +20,7 @@ package grpc
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -37,6 +38,80 @@ type resolverStateUpdater interface {
 	updateResolverState(s resolver.State, err error) error
 }
 
+type genWrapper struct {
+	parent           *ccResolverWrapper
+	serializer       *grpcsync.CallbackSerializer // To serialize all incoming calls.
+	serializerCancel context.CancelFunc           // To close the serializer, accessed only from close().
+}
+
+func (w *genWrapper) close() {
+	w.serializerCancel()
+}
+
+func (w *genWrapper) UpdateState(s resolver.State) error {
+	w.parent.mu.Lock()
+	if !w.parent.isCurrentLocked(w) {
+		w.parent.mu.Unlock()
+		return fmt.Errorf("state update %+v received from closed resolver", s)
+	}
+
+	errCh := make(chan error, 1)
+	ok := w.serializer.Schedule(func(context.Context) {
+		w.parent.mu.Unlock()
+		errCh <- w.parent.UpdateState(s)
+	})
+	if !ok {
+		// The only time when Schedule() fail to add the callback to the
+		// serializer is when the serializer is closed, and this happens only
+		// when the resolver wrapper is closed.
+		w.parent.mu.Unlock()
+		return nil
+	}
+	return <-errCh
+}
+
+func (w *genWrapper) ReportError(err error) {
+	w.parent.mu.Lock()
+	if !w.parent.isCurrentLocked(w) {
+		w.parent.mu.Unlock()
+		return
+	}
+
+	ok := w.serializer.Schedule(func(context.Context) {
+		w.parent.mu.Unlock()
+		w.parent.ReportError(err)
+	})
+	if !ok {
+		// The only time when Schedule() fail to add the callback to the
+		// serializer is when the serializer is closed, and this happens only
+		// when the resolver wrapper is closed.
+		w.parent.mu.Unlock()
+	}
+}
+
+func (w *genWrapper) NewAddress(addrs []resolver.Address) {
+	w.parent.mu.Lock()
+	if !w.parent.isCurrentLocked(w) {
+		w.parent.mu.Unlock()
+		return
+	}
+
+	ok := w.serializer.Schedule(func(context.Context) {
+		w.parent.mu.Unlock()
+		w.parent.NewAddress(addrs)
+	})
+	if !ok {
+		// The only time when Schedule() fail to add the callback to the
+		// serializer is when the serializer is closed, and this happens only
+		// when the resolver wrapper is closed.
+		w.parent.mu.Unlock()
+	}
+}
+
+func (w *genWrapper) ParseServiceConfig(scJSON string) *serviceconfig.ParseResult {
+	return parseServiceConfig(scJSON)
+}
+
 // ccResolverWrapper is a wrapper on top of cc for resolvers.
 // It implements resolver.ClientConn interface.
 type ccResolverWrapper struct {
@@ -46,8 +121,6 @@ type ccResolverWrapper struct {
 	channelzID          *channelz.Identifier
 	ignoreServiceConfig bool
 	opts                ccResolverWrapperOpts
-	serializer          *grpcsync.CallbackSerializer // To serialize all incoming calls.
-	serializerCancel    context.CancelFunc           // To close the serializer, accessed only from close().
 
 	// All incoming (resolver --> gRPC) calls are guaranteed to execute in a
 	// mutually exclusive manner as they are scheduled on the serializer.
@@ -57,8 +130,8 @@ type ccResolverWrapper struct {
 
 	// mu guards access to the below fields.
 	mu       sync.Mutex
-	closed   bool
 	resolver resolver.Resolver // Accessed only from outgoing calls.
+	gw       *genWrapper
 }
 
 // ccResolverWrapperOpts wraps the arguments to be passed when creating a new
@@ -72,35 +145,17 @@ type ccResolverWrapperOpts struct {
 
 // newCCResolverWrapper uses the resolver.Builder to build a Resolver and
 // returns a ccResolverWrapper object which wraps the newly built resolver.
-func newCCResolverWrapper(cc resolverStateUpdater, opts ccResolverWrapperOpts) (*ccResolverWrapper, error) {
-	ctx, cancel := context.WithCancel(context.Background())
-	ccr := &ccResolverWrapper{
+func newCCResolverWrapper(cc resolverStateUpdater, opts ccResolverWrapperOpts) *ccResolverWrapper {
+	return &ccResolverWrapper{
 		cc:                  cc,
 		channelzID:          opts.channelzID,
 		ignoreServiceConfig: opts.bOpts.DisableServiceConfig,
 		opts:                opts,
-		serializer:          grpcsync.NewCallbackSerializer(ctx),
-		serializerCancel:    cancel,
 	}
+}
 
-	// Cannot hold the lock at build time because the resolver can send an
-	// update or error inline and these incoming calls grab the lock to schedule
-	// a callback in the serializer.
-	r, err := opts.builder.Build(opts.target, ccr, opts.bOpts)
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-
-	// Any error reported by the resolver at build time that leads to a
-	// re-resolution request from the balancer is dropped by grpc until we
-	// return from this function. So, we don't have to handle pending resolveNow
-	// requests here.
-	ccr.mu.Lock()
-	ccr.resolver = r
-	ccr.mu.Unlock()
-
-	return ccr, nil
+func (ccr *ccResolverWrapper) isCurrentLocked(gw *genWrapper) bool {
+	return ccr.gw == gw
 }
 
 func (ccr *ccResolverWrapper) resolveNow(o resolver.ResolveNowOptions) {
@@ -110,7 +165,7 @@ func (ccr *ccResolverWrapper) resolveNow(o resolver.ResolveNowOptions) {
 	// ccr.resolver field is set only after the call to Build() returns. But in
 	// the process of building, the resolver may send an error update which when
 	// propagated to the balancer may result in a re-resolution request.
-	if ccr.closed || ccr.resolver == nil {
+	if ccr.resolver == nil {
 		return
 	}
 	ccr.resolver.ResolveNow(o)
@@ -118,32 +173,68 @@ func (ccr *ccResolverWrapper) resolveNow(o resolver.ResolveNowOptions) {
 
 func (ccr *ccResolverWrapper) close() {
 	ccr.mu.Lock()
-	if ccr.closed {
+
+	gw := ccr.gw
+	if gw == nil {
 		ccr.mu.Unlock()
 		return
 	}
+	ccr.gw = nil
 
 	channelz.Info(logger, ccr.channelzID, "Closing the name resolver")
 
 	// Close the serializer to ensure that no more calls from the resolver are
 	// handled, before actually closing the resolver.
-	ccr.serializerCancel()
-	ccr.closed = true
+	gw.serializerCancel()
 	r := ccr.resolver
 	ccr.mu.Unlock()
 
 	// Give enqueued callbacks a chance to finish.
-	<-ccr.serializer.Done()
+	<-gw.serializer.Done()
 
 	// Spawn a goroutine to close the resolver (since it may block trying to
 	// cleanup all allocated resources) and return early.
-	go r.Close()
+	if r != nil {
+		go r.Close()
+	}
+}
+
+func (ccr *ccResolverWrapper) enterIdleMode() {
+	ccr.close()
+}
+
+func (ccr *ccResolverWrapper) exitIdleMode() error {
+	ccr.mu.Lock()
+	ctx, cancel := context.WithCancel(context.Background())
+	ccr.gw = &genWrapper{
+		parent:           ccr,
+		serializer:       grpcsync.NewCallbackSerializer(ctx),
+		serializerCancel: cancel,
+	}
+	ccr.mu.Unlock()
+
+	// Cannot hold the lock at build time because the resolver can send an
+	// update or error inline and these incoming calls grab the lock to schedule
+	// a callback in the serializer.
+	r, err := ccr.opts.builder.Build(ccr.opts.target, ccr.gw, ccr.opts.bOpts)
+	if err != nil {
+		cancel()
+		return err
+	}
+
+	// Any error reported by the resolver at build time that leads to a
+	// re-resolution request from the balancer is dropped by grpc until we
+	// return from this function. So, we don't have to handle pending resolveNow
+	// requests here.
+	ccr.mu.Lock()
+	ccr.resolver = r
+	ccr.mu.Unlock()
+	return nil
 }
 
 // UpdateState is called by resolver implementations to report new state to gRPC
 // which includes addresses and service config.
 func (ccr *ccResolverWrapper) UpdateState(s resolver.State) error {
-	errCh := make(chan error, 1)
 	if s.Endpoints == nil {
 		s.Endpoints = make([]resolver.Endpoint, 0, len(s.Addresses))
 		for _, a := range s.Addresses {
@@ -152,41 +243,28 @@ func (ccr *ccResolverWrapper) UpdateState(s resolver.State) error {
 			s.Endpoints = append(s.Endpoints, ep)
 		}
 	}
-	ok := ccr.serializer.Schedule(func(context.Context) {
-		ccr.addChannelzTraceEvent(s)
-		ccr.curState = s
-		if err := ccr.cc.updateResolverState(ccr.curState, nil); err == balancer.ErrBadResolverState {
-			errCh <- balancer.ErrBadResolverState
-			return
-		}
-		errCh <- nil
-	})
-	if !ok {
-		// The only time when Schedule() fail to add the callback to the
-		// serializer is when the serializer is closed, and this happens only
-		// when the resolver wrapper is closed.
-		return nil
+
+	ccr.addChannelzTraceEvent(s)
+	ccr.curState = s
+	if err := ccr.cc.updateResolverState(ccr.curState, nil); err == balancer.ErrBadResolverState {
+		return balancer.ErrBadResolverState
 	}
-	return <-errCh
+	return nil
 }
 
 // ReportError is called by resolver implementations to report errors
 // encountered during name resolution to gRPC.
 func (ccr *ccResolverWrapper) ReportError(err error) {
-	ccr.serializer.Schedule(func(_ context.Context) {
-		channelz.Warningf(logger, ccr.channelzID, "ccResolverWrapper: reporting error to cc: %v", err)
-		ccr.cc.updateResolverState(resolver.State{}, err)
-	})
+	channelz.Warningf(logger, ccr.channelzID, "ccResolverWrapper: reporting error to cc: %v", err)
+	ccr.cc.updateResolverState(resolver.State{}, err)
 }
 
 // NewAddress is called by the resolver implementation to send addresses to
 // gRPC.
 func (ccr *ccResolverWrapper) NewAddress(addrs []resolver.Address) {
-	ccr.serializer.Schedule(func(_ context.Context) {
-		ccr.addChannelzTraceEvent(resolver.State{Addresses: addrs, ServiceConfig: ccr.curState.ServiceConfig})
-		ccr.curState.Addresses = addrs
-		ccr.cc.updateResolverState(ccr.curState, nil)
-	})
+	ccr.addChannelzTraceEvent(resolver.State{Addresses: addrs, ServiceConfig: ccr.curState.ServiceConfig})
+	ccr.curState.Addresses = addrs
+	ccr.cc.updateResolverState(ccr.curState, nil)
 }
 
 // ParseServiceConfig is called by resolver implementations to parse a JSON

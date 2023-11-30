@@ -33,7 +33,6 @@ import (
 	"google.golang.org/grpc/balancer/base"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/connectivity"
-	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/internal"
 	"google.golang.org/grpc/internal/channelz"
 	"google.golang.org/grpc/internal/grpcsync"
@@ -187,6 +186,17 @@ func newClient(target string, opts ...DialOption) (conn *ClientConn, err error) 
 	}
 
 	cc.csMgr = newConnectivityStateManager(cc.ctx, cc.channelzID)
+	cc.resolverWrapper = newCCResolverWrapper(cc, ccResolverWrapperOpts{
+		target:  cc.parsedTarget,
+		builder: cc.resolverBuilder,
+		bOpts: resolver.BuildOptions{
+			DisableServiceConfig: cc.dopts.disableServiceConfig,
+			DialCreds:            cc.dopts.copts.TransportCredentials,
+			CredsBundle:          cc.dopts.copts.CredsBundle,
+			Dialer:               cc.dopts.copts.Dialer,
+		},
+		channelzID: cc.channelzID,
+	})
 	cc.pickerWrapper = newPickerWrapper(cc.dopts.copts.StatsHandlers)
 	cc.balancerWrapper = newCCBalancerWrapper(cc, balancer.BuildOptions{
 		DialCreds:        cc.dopts.copts.TransportCredentials,
@@ -369,7 +379,7 @@ func (cc *ClientConn) exitIdleMode() error {
 	// This needs to be called without cc.mu because this builds a new resolver
 	// which might update state or report error inline which needs to be handled
 	// by cc.updateResolverState() which also grabs cc.mu.
-	if err := cc.initResolverWrapper(cc.dopts.copts.TransportCredentials); err != nil {
+	if err := cc.resolverWrapper.exitIdleMode(); err != nil {
 		return err
 	}
 
@@ -397,13 +407,7 @@ func (cc *ClientConn) enterIdleMode() error {
 	conns := cc.conns
 	cc.conns = make(map[*addrConn]struct{})
 
-	// TODO: Currently, we close the resolver wrapper upon entering idle mode
-	// and create a new one upon exiting idle mode. This means that the
-	// `cc.resolverWrapper` field would be overwritten everytime we exit idle
-	// mode. While this means that we need to hold `cc.mu` when accessing
-	// `cc.resolverWrapper`, it makes the code simpler in the wrapper. We should
-	// try to do the same for the balancer and picker wrappers too.
-	cc.resolverWrapper.close()
+	cc.resolverWrapper.enterIdleMode()
 	cc.pickerWrapper.enterIdleMode()
 	cc.balancerWrapper.enterIdleMode()
 	cc.csMgr.updateState(connectivity.Idle)
@@ -1957,34 +1961,5 @@ func (cc *ClientConn) determineAuthority() error {
 		cc.authority = encodeAuthority(endpoint)
 	}
 	channelz.Infof(logger, cc.channelzID, "Channel authority set to %q", cc.authority)
-	return nil
-}
-
-// initResolverWrapper creates a ccResolverWrapper, which builds the name
-// resolver. This method grabs the lock to assign the newly built resolver
-// wrapper to the cc.resolverWrapper field.
-func (cc *ClientConn) initResolverWrapper(creds credentials.TransportCredentials) error {
-	rw, err := newCCResolverWrapper(cc, ccResolverWrapperOpts{
-		target:  cc.parsedTarget,
-		builder: cc.resolverBuilder,
-		bOpts: resolver.BuildOptions{
-			DisableServiceConfig: cc.dopts.disableServiceConfig,
-			DialCreds:            creds,
-			CredsBundle:          cc.dopts.copts.CredsBundle,
-			Dialer:               cc.dopts.copts.Dialer,
-		},
-		channelzID: cc.channelzID,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to build resolver: %v", err)
-	}
-	// Resolver implementations may report state update or error inline when
-	// built (or right after), and this is handled in cc.updateResolverState.
-	// Also, an error from the resolver might lead to a re-resolution request
-	// from the balancer, which is handled in resolveNow() where
-	// `cc.resolverWrapper` is accessed. Hence, we need to hold the lock here.
-	cc.mu.Lock()
-	cc.resolverWrapper = rw
-	cc.mu.Unlock()
 	return nil
 }
