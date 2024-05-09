@@ -307,6 +307,8 @@ func (b *clusterImplBalancer) Close() {
 	b.childState = balancer.State{}
 	b.pickerUpdateCh.Close()
 	<-b.done.Done()
+	// While we are waiting on `done`, we are actually waiting on the load
+	// report to be cancelled, and this can be inlined here.
 	b.logger.Infof("Shutdown")
 }
 
