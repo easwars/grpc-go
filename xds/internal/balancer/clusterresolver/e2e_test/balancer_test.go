@@ -72,10 +72,10 @@ func setupAndDial(t *testing.T, bootstrapContents []byte) (*grpc.ClientConn, fun
 	t.Helper()
 
 	// Create an xDS client for use by the cluster_resolver LB policy.
-	xdsC, xdsClose, err := xdsclient.NewWithBootstrapContentsForTesting(bootstrapContents)
-	if err != nil {
-		t.Fatalf("Failed to create xDS client: %v", err)
-	}
+	xdsC, xdsClose, err := xdsclient.NewForTesting(xdsclient.ClientOptionsForTesting{
+		Name:              t.Name(),
+		BootstrapContents: bootstrapContents,
+	})
 
 	// Create a manual resolver and push a service config specifying the use of
 	// the cds LB policy as the top-level LB policy, and a corresponding config

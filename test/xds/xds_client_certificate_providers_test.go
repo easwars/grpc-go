@@ -76,11 +76,11 @@ func (s) TestClientSideXDS_WithNoCertificateProvidersInBootstrap_Success(t *test
 	}
 
 	// Create an xDS resolver with the above bootstrap configuration.
-	newResolver := internal.NewXDSResolverWithConfigForTesting
+	newResolver := internal.NewXDSResolverForTesting
 	if newResolver == nil {
 		t.Fatal("internal.NewXDSResolverWithConfigForTesting is unset")
 	}
-	resolverBuilder, err := newResolver.(func([]byte) (resolver.Builder, error))(bs)
+	resolverBuilder, err := newResolver.(func(*testing.T, []byte) (resolver.Builder, error))(t, bs)
 	if err != nil {
 		t.Fatalf("Failed to create xDS resolver for testing: %v", err)
 	}
@@ -152,11 +152,11 @@ func (s) TestClientSideXDS_WithNoCertificateProvidersInBootstrap_Failure(t *test
 	}
 
 	// Create an xDS resolver with the above bootstrap configuration.
-	newResolver := internal.NewXDSResolverWithConfigForTesting
+	newResolver := internal.NewXDSResolverForTesting
 	if newResolver == nil {
 		t.Fatal("internal.NewXDSResolverWithConfigForTesting is unset")
 	}
-	resolverBuilder, err := newResolver.(func([]byte) (resolver.Builder, error))(bs)
+	resolverBuilder, err := newResolver.(func(*testing.T, []byte) (resolver.Builder, error))(t, bs)
 	if err != nil {
 		t.Fatalf("Failed to create xDS resolver for testing: %v", err)
 	}

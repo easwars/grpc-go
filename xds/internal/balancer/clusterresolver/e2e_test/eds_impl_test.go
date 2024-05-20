@@ -149,7 +149,10 @@ func (s) TestEDS_OneLocality(t *testing.T) {
 	}
 
 	// Create an xDS client for use by the cluster_resolver LB policy.
-	client, close, err := xdsclient.NewWithBootstrapContentsForTesting(bootstrapContents)
+	client, close, err := xdsclient.NewForTesting(xdsclient.ClientOptionsForTesting{
+		Name:              t.Name(),
+		BootstrapContents: bootstrapContents,
+	})
 	if err != nil {
 		t.Fatalf("Failed to create xDS client: %v", err)
 	}
@@ -278,7 +281,10 @@ func (s) TestEDS_MultipleLocalities(t *testing.T) {
 	}
 
 	// Create an xDS client for use by the cluster_resolver LB policy.
-	client, close, err := xdsclient.NewWithBootstrapContentsForTesting(bootstrapContents)
+	client, close, err := xdsclient.NewForTesting(xdsclient.ClientOptionsForTesting{
+		Name:              t.Name(),
+		BootstrapContents: bootstrapContents,
+	})
 	if err != nil {
 		t.Fatalf("Failed to create xDS client: %v", err)
 	}
@@ -436,7 +442,10 @@ func (s) TestEDS_EndpointsHealth(t *testing.T) {
 	}
 
 	// Create an xDS client for use by the cluster_resolver LB policy.
-	client, close, err := xdsclient.NewWithBootstrapContentsForTesting(bootstrapContents)
+	client, close, err := xdsclient.NewForTesting(xdsclient.ClientOptionsForTesting{
+		Name:              t.Name(),
+		BootstrapContents: bootstrapContents,
+	})
 	if err != nil {
 		t.Fatalf("Failed to create xDS client: %v", err)
 	}
@@ -503,7 +512,10 @@ func (s) TestEDS_EmptyUpdate(t *testing.T) {
 	}
 
 	// Create an xDS client for use by the cluster_resolver LB policy.
-	client, close, err := xdsclient.NewWithBootstrapContentsForTesting(bootstrapContents)
+	client, close, err := xdsclient.NewForTesting(xdsclient.ClientOptionsForTesting{
+		Name:              t.Name(),
+		BootstrapContents: bootstrapContents,
+	})
 	if err != nil {
 		t.Fatalf("Failed to create xDS client: %v", err)
 	}
@@ -887,7 +899,10 @@ func (s) TestEDS_BadUpdateWithoutPreviousGoodUpdate(t *testing.T) {
 	}
 
 	// Create an xDS client for use by the cluster_resolver LB policy.
-	xdsClient, close, err := xdsclient.NewWithBootstrapContentsForTesting(bootstrapContents)
+	xdsClient, close, err := xdsclient.NewForTesting(xdsclient.ClientOptionsForTesting{
+		Name:              t.Name(),
+		BootstrapContents: bootstrapContents,
+	})
 	if err != nil {
 		t.Fatalf("Failed to create xDS client: %v", err)
 	}
@@ -953,7 +968,10 @@ func (s) TestEDS_BadUpdateWithPreviousGoodUpdate(t *testing.T) {
 	}
 
 	// Create an xDS client for use by the cluster_resolver LB policy.
-	xdsClient, close, err := xdsclient.NewWithBootstrapContentsForTesting(bootstrapContents)
+	xdsClient, close, err := xdsclient.NewForTesting(xdsclient.ClientOptionsForTesting{
+		Name:              t.Name(),
+		BootstrapContents: bootstrapContents,
+	})
 	if err != nil {
 		t.Fatalf("Failed to create xDS client: %v", err)
 	}
@@ -1025,12 +1043,16 @@ func (s) TestEDS_ResourceNotFound(t *testing.T) {
 	// Create an xDS client talking to the above management server, configured
 	// with a short watch expiry timeout.
 	nodeID := uuid.New().String()
-	xdsClient, close, err := xdsclient.NewWithConfigForTesting(&bootstrap.Config{
-		XDSServer: xdstestutils.ServerConfigForAddress(t, mgmtServer.Address),
-		NodeProto: &v3corepb.Node{Id: nodeID},
-	}, defaultTestWatchExpiryTimeout, time.Duration(0))
+	xdsClient, close, err := xdsclient.NewForTesting(xdsclient.ClientOptionsForTesting{
+		Name: t.Name(),
+		BootstrapConfig: &bootstrap.Config{
+			XDSServer: xdstestutils.ServerConfigForAddress(t, mgmtServer.Address),
+			NodeProto: &v3corepb.Node{Id: nodeID},
+		},
+		WatchExpiryTimeout: defaultTestWatchExpiryTimeout,
+	})
 	if err != nil {
-		t.Fatalf("failed to create xds client: %v", err)
+		t.Fatalf("Failed to create xds client: %v", err)
 	}
 	defer close()
 
@@ -1065,7 +1087,7 @@ func (s) TestEDS_ResourceNotFound(t *testing.T) {
 	// removed" error.
 	cc, err := grpc.Dial(r.Scheme()+":///test.service", grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithResolvers(r))
 	if err != nil {
-		t.Fatalf("failed to dial local test server: %v", err)
+		t.Fatalf("Failed to dial local test server: %v", err)
 	}
 	defer cc.Close()
 	client := testgrpc.NewTestServiceClient(cc)

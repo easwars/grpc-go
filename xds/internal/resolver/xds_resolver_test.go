@@ -257,17 +257,20 @@ func (s) TestResolverWatchCallbackAfterClose(t *testing.T) {
 
 // Tests that the xDS resolver's Close method closes the xDS client.
 func (s) TestResolverCloseClosesXDSClient(t *testing.T) {
-	bootstrapCfg := &bootstrap.Config{
-		XDSServer: xdstestutils.ServerConfigForAddress(t, "dummy-management-server-address"),
-	}
-
 	// Override xDS client creation to use bootstrap configuration pointing to a
 	// dummy management server. Also close a channel when the returned xDS
 	// client is closed.
 	origNewClient := rinternal.NewXDSClient
 	closeCh := make(chan struct{})
 	rinternal.NewXDSClient = func() (xdsclient.XDSClient, func(), error) {
-		c, cancel, err := xdsclient.NewWithConfigForTesting(bootstrapCfg, defaultTestTimeout, defaultTestTimeout)
+		c, cancel, err := xdsclient.NewForTesting(xdsclient.ClientOptionsForTesting{
+			Name: t.Name(),
+			BootstrapConfig: &bootstrap.Config{
+				XDSServer: xdstestutils.ServerConfigForAddress(t, "dummy-management-server-address"),
+			},
+			WatchExpiryTimeout:   defaultTestTimeout,
+			AuthorityIdleTimeout: defaultTestTimeout,
+		})
 		return c, grpcsync.OnceFunc(func() {
 			close(closeCh)
 			cancel()

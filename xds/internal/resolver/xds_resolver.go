@@ -44,20 +44,18 @@ import (
 // xdsresolver.Scheme
 const Scheme = "xds"
 
-// newBuilderForTesting creates a new xds resolver builder using a specific xds
-// bootstrap config, so tests can use multiple xds clients in different
-// ClientConns at the same time.
-func newBuilderForTesting(config []byte) (resolver.Builder, error) {
+// newBuilderForTesting creates a new xds resolver builder using a specific xDS
+// client, so tests can use multiple xds clients in different ClientConns at the
+// same time.
+func newBuilderForTesting(xdsC xdsclient.XDSClient, close func()) (resolver.Builder, error) {
 	return &xdsResolverBuilder{
-		newXDSClient: func() (xdsclient.XDSClient, func(), error) {
-			return xdsclient.NewWithBootstrapContentsForTesting(config)
-		},
+		newXDSClient: func() (xdsclient.XDSClient, func(), error) { return xdsC, close, nil },
 	}, nil
 }
 
 func init() {
 	resolver.Register(&xdsResolverBuilder{})
-	internal.NewXDSResolverWithConfigForTesting = newBuilderForTesting
+	internal.NewXDSResolverForTesting = newBuilderForTesting
 
 	rinternal.NewWRR = wrr.NewRandom
 	rinternal.NewXDSClient = xdsclient.New

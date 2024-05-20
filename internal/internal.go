@@ -129,16 +129,21 @@ var (
 	// SubscribeToConnectivityStateChanges adds a grpcsync.Subscriber to a provided grpc.ClientConn
 	SubscribeToConnectivityStateChanges any // func(*grpc.ClientConn, grpcsync.Subscriber)
 
-	// NewXDSResolverWithConfigForTesting creates a new xds resolver builder using
-	// the provided xds bootstrap config instead of the global configuration from
-	// the supported environment variables.  The resolver.Builder is meant to be
-	// used in conjunction with the grpc.WithResolvers DialOption.
+	// NewXDSResolverForTesting creates a new xDS resolver builder using the
+	// provided xDS client instead of the global one created from configuration
+	// specified in environment variables. The second argument is a close func,
+	// to be invoked when the xDS resolver no longer needs the provided xDS
+	// client. The resolver.Builder is meant to be used in conjunction with the
+	// grpc.WithResolvers DialOption.
 	//
 	// Testing Only
 	//
 	// This function should ONLY be used for testing and may not work with some
 	// other features, including the CSDS service.
-	NewXDSResolverWithConfigForTesting any // func([]byte) (resolver.Builder, error)
+	NewXDSResolverForTesting any // func(xdsclient.XDSClient, func()) (resolver.Builder, error)
+
+	// NewXDSClientForTesting TBD.
+	NewXDSClientForTesting any // func(xdsclient.ClientOptionsForTesting{}) (xdsclient.XDSClient, func(), error)
 
 	// RegisterRLSClusterSpecifierPluginForTesting registers the RLS Cluster
 	// Specifier Plugin for testing purposes, regardless of the XDSRLS environment

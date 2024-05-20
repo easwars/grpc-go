@@ -107,7 +107,10 @@ func xdsSetupForTests(t *testing.T) (*e2e.ManagementServer, string, chan []strin
 	})
 	t.Cleanup(cleanup)
 
-	xdsC, cancel, err := xdsclient.NewWithBootstrapContentsForTesting(bootstrapContents)
+	xdsC, cancel, err := xdsclient.NewForTesting(xdsclient.ClientOptionsForTesting{
+		Name:              t.Name(),
+		BootstrapContents: bootstrapContents,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

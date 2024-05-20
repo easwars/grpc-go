@@ -1107,12 +1107,16 @@ func (s) TestAggregateCluster_Fallback_EDS_ResourceNotFound(t *testing.T) {
 
 	// Create an xDS client talking to the above management server, configured
 	// with a short watch expiry timeout.
-	xdsClient, close, err := xdsclient.NewWithConfigForTesting(&bootstrap.Config{
-		XDSServer: xdstestutils.ServerConfigForAddress(t, mgmtServer.Address),
-		NodeProto: &v3corepb.Node{Id: nodeID},
-	}, defaultTestWatchExpiryTimeout, time.Duration(0))
+	xdsClient, close, err := xdsclient.NewForTesting(xdsclient.ClientOptionsForTesting{
+		Name: t.Name(),
+		BootstrapConfig: &bootstrap.Config{
+			XDSServer: xdstestutils.ServerConfigForAddress(t, mgmtServer.Address),
+			NodeProto: &v3corepb.Node{Id: nodeID},
+		},
+		WatchExpiryTimeout: defaultTestWatchExpiryTimeout,
+	})
 	if err != nil {
-		t.Fatalf("failed to create xds client: %v", err)
+		t.Fatalf("Failed to create xds client: %v", err)
 	}
 	defer close()
 
@@ -1133,7 +1137,7 @@ func (s) TestAggregateCluster_Fallback_EDS_ResourceNotFound(t *testing.T) {
 	// Create a ClientConn.
 	cc, err := grpc.Dial(r.Scheme()+":///test.service", grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithResolvers(r))
 	if err != nil {
-		t.Fatalf("failed to dial local test server: %v", err)
+		t.Fatalf("Failed to dial local test server: %v", err)
 	}
 	defer cc.Close()
 

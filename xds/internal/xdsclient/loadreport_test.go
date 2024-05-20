@@ -49,10 +49,14 @@ func (s) TestLRSClient(t *testing.T) {
 	defer sCleanup()
 
 	serverCfg1 := xdstestutils.ServerConfigForAddress(t, fs1.Address)
-	xdsC, close, err := NewWithConfigForTesting(&bootstrap.Config{
-		XDSServer: serverCfg1,
-		NodeProto: &v3corepb.Node{},
-	}, defaultClientWatchExpiryTimeout, time.Duration(0))
+	xdsC, close, err := NewForTesting(ClientOptionsForTesting{
+		Name: t.Name(),
+		BootstrapConfig: &bootstrap.Config{
+			XDSServer: serverCfg1,
+			NodeProto: &v3corepb.Node{},
+		},
+		WatchExpiryTimeout: defaultTestWatchExpiryTimeout,
+	})
 	if err != nil {
 		t.Fatalf("failed to create xds client: %v", err)
 	}

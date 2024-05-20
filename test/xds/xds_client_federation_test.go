@@ -81,8 +81,8 @@ func (s) TestClientSideFederation(t *testing.T) {
 		t.Fatalf("Failed to create bootstrap file: %v", err)
 	}
 
-	resolverBuilder := internal.NewXDSResolverWithConfigForTesting.(func([]byte) (resolver.Builder, error))
-	resolver, err := resolverBuilder(bootstrapContents)
+	resolverBuilder := internal.NewXDSResolverForTesting.(func(*testing.T, []byte) (resolver.Builder, error))
+	resolver, err := resolverBuilder(t, bootstrapContents)
 	if err != nil {
 		t.Fatalf("Failed to create xDS resolver for testing: %v", err)
 	}
@@ -166,8 +166,8 @@ func (s) TestClientSideFederationWithOnlyXDSTPStyleLDS(t *testing.T) {
 		t.Fatalf("Failed to create bootstrap file: %v", err)
 	}
 
-	resolverBuilder := internal.NewXDSResolverWithConfigForTesting.(func([]byte) (resolver.Builder, error))
-	resolver, err := resolverBuilder(bootstrapContents)
+	resolverBuilder := internal.NewXDSResolverForTesting.(func(*testing.T, []byte) (resolver.Builder, error))
+	resolver, err := resolverBuilder(t, bootstrapContents)
 	if err != nil {
 		t.Fatalf("Failed to create xDS resolver for testing: %v", err)
 	}
@@ -301,8 +301,8 @@ func (s) TestFederation_UnknownAuthorityInReceivedResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resolverBuilder := internal.NewXDSResolverWithConfigForTesting.(func([]byte) (resolver.Builder, error))
-	resolver, err := resolverBuilder(bootstrapContents)
+	resolverBuilder := internal.NewXDSResolverForTesting.(func(*testing.T, []byte) (resolver.Builder, error))
+	resolver, err := resolverBuilder(t, bootstrapContents)
 	if err != nil {
 		t.Fatalf("Creating xDS resolver for testing: %v", err)
 	}

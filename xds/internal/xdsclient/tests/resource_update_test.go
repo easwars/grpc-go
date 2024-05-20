@@ -241,10 +241,14 @@ func (s) TestHandleListenerResponseFromManagementServer(t *testing.T) {
 
 			// Create an xDS client talking to the above management server.
 			nodeID := uuid.New().String()
-			client, close, err := xdsclient.NewWithConfigForTesting(&bootstrap.Config{
-				XDSServer: xdstestutils.ServerConfigForAddress(t, mgmtServer.Address),
-				NodeProto: &v3corepb.Node{Id: nodeID},
-			}, defaultTestWatchExpiryTimeout, time.Duration(0))
+			client, close, err := xdsclient.NewForTesting(xdsclient.ClientOptionsForTesting{
+				Name: t.Name(),
+				BootstrapConfig: &bootstrap.Config{
+					XDSServer: xdstestutils.ServerConfigForAddress(t, mgmtServer.Address),
+					NodeProto: &v3corepb.Node{Id: nodeID},
+				},
+				WatchExpiryTimeout: defaultTestWatchExpiryTimeout,
+			})
 			if err != nil {
 				t.Fatalf("failed to create xds client: %v", err)
 			}
@@ -495,10 +499,14 @@ func (s) TestHandleRouteConfigResponseFromManagementServer(t *testing.T) {
 
 			// Create an xDS client talking to the above management server.
 			nodeID := uuid.New().String()
-			client, close, err := xdsclient.NewWithConfigForTesting(&bootstrap.Config{
-				XDSServer: xdstestutils.ServerConfigForAddress(t, mgmtServer.Address),
-				NodeProto: &v3corepb.Node{Id: nodeID},
-			}, defaultTestWatchExpiryTimeout, time.Duration(0))
+			client, close, err := xdsclient.NewForTesting(xdsclient.ClientOptionsForTesting{
+				Name: t.Name(),
+				BootstrapConfig: &bootstrap.Config{
+					XDSServer: xdstestutils.ServerConfigForAddress(t, mgmtServer.Address),
+					NodeProto: &v3corepb.Node{Id: nodeID},
+				},
+				WatchExpiryTimeout: defaultTestWatchExpiryTimeout,
+			})
 			if err != nil {
 				t.Fatalf("failed to create xds client: %v", err)
 			}
@@ -710,10 +718,14 @@ func (s) TestHandleClusterResponseFromManagementServer(t *testing.T) {
 
 			// Create an xDS client talking to the above management server.
 			nodeID := uuid.New().String()
-			client, close, err := xdsclient.NewWithConfigForTesting(&bootstrap.Config{
-				XDSServer: xdstestutils.ServerConfigForAddress(t, mgmtServer.Address),
-				NodeProto: &v3corepb.Node{Id: nodeID},
-			}, defaultTestWatchExpiryTimeout, time.Duration(0))
+			client, close, err := xdsclient.NewForTesting(xdsclient.ClientOptionsForTesting{
+				Name: t.Name(),
+				BootstrapConfig: &bootstrap.Config{
+					XDSServer: xdstestutils.ServerConfigForAddress(t, mgmtServer.Address),
+					NodeProto: &v3corepb.Node{Id: nodeID},
+				},
+				WatchExpiryTimeout: defaultTestWatchExpiryTimeout,
+			})
 			if err != nil {
 				t.Fatalf("failed to create xds client: %v", err)
 			}
@@ -1033,10 +1045,14 @@ func (s) TestHandleEndpointsResponseFromManagementServer(t *testing.T) {
 
 			// Create an xDS client talking to the above management server.
 			nodeID := uuid.New().String()
-			client, close, err := xdsclient.NewWithConfigForTesting(&bootstrap.Config{
-				XDSServer: xdstestutils.ServerConfigForAddress(t, mgmtServer.Address),
-				NodeProto: &v3corepb.Node{Id: nodeID},
-			}, defaultTestWatchExpiryTimeout, time.Duration(0))
+			client, close, err := xdsclient.NewForTesting(xdsclient.ClientOptionsForTesting{
+				Name: t.Name(),
+				BootstrapConfig: &bootstrap.Config{
+					XDSServer: xdstestutils.ServerConfigForAddress(t, mgmtServer.Address),
+					NodeProto: &v3corepb.Node{Id: nodeID},
+				},
+				WatchExpiryTimeout: defaultTestWatchExpiryTimeout,
+			})
 			if err != nil {
 				t.Fatalf("failed to create xds client: %v", err)
 			}

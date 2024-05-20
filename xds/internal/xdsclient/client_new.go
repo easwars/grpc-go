@@ -59,13 +59,13 @@ func New() (XDSClient, func(), error) {
 //
 // # Internal/Testing Only
 //
-// This function should ONLY be used for internal (c2p resolver) and/or testing
-// purposese. DO NOT use this elsewhere. Use New() instead.
+// This function should ONLY be used by the internal google-c2p resolver.
+// DO NOT use this elsewhere. Use New() instead.
 func NewWithConfig(config *bootstrap.Config) (XDSClient, func(), error) {
 	return newRefCountedWithConfig(config)
 }
 
-// newWithConfig returns a new xdsClient with the given config.
+// newWithConfig returns a new xDS client with the given config.
 func newWithConfig(config *bootstrap.Config, watchExpiryTimeout time.Duration, idleAuthorityDeleteTimeout time.Duration) (*clientImpl, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &clientImpl{
@@ -84,6 +84,61 @@ func newWithConfig(config *bootstrap.Config, watchExpiryTimeout time.Duration, i
 	return c, nil
 }
 
+// ClientOptionsForTesting TBD.
+type ClientOptionsForTesting struct {
+	// Name uniquely identifies an xDS client instance. Must be non-empty. Tests
+	// are recommended to pass `t.Name()` for this field. If a test creates more
+	// than one xDS client, it should pass `t.Name() + <unique-suffix>`.
+	Name string
+
+	// BootstrapConfig contains parsed bootstrap configuration. If both
+	// BootstrapConfig and BootstrapContents are specified, the former takes
+	// preference.
+	BootstrapConfig *bootstrap.Config
+
+	/// BootstrapContents contains raw JSON bootstrap configuration.
+	BootstrapContents []byte
+
+	// WatchExpiryTimeout specifies the timeout for watches registered by the
+	// xDS client, for xDS resources. If unspecified, the default value used by
+	// the implementation is used, which is currently 15 seconds.
+	WatchExpiryTimeout time.Duration
+
+	// AuthorityIdleTimeout specifies the timeout for authorities to be cleaned
+	// up after being removed (because of no more watches to them). Uf
+	// unspecified, the default value used by the implementation is used, which
+	// is currently 5 minutes.
+	AuthorityIdleTimeout time.Duration
+}
+
+// NewForTesting TBD.
+func NewForTesting(opts ClientOptionsForTesting) (XDSClient, func(), error) {
+	if opts.Name == "" {
+		return nil, nil, fmt.Errorf("empty Name field in options struct")
+	}
+
+	// TODO: make sure that opts.Name is not already used for another client.
+
+	// TODO: Use opts.Name and place these clients in the same clients map as
+	// used by non-test code.
+
+	cfg := opts.BootstrapConfig
+	if cfg == nil {
+		var err error
+		cfg, err = bootstrap.NewConfigFromContents(opts.BootstrapContents)
+		if err != nil {
+			return nil, nil, fmt.Errorf("bootstrap config %s: %v", string(opts.BootstrapContents), err)
+		}
+	}
+	if opts.WatchExpiryTimeout == 0 {
+		opts.WatchExpiryTimeout = defaultWatchExpiryTimeout
+	}
+	if opts.AuthorityIdleTimeout == 0 {
+		opts.AuthorityIdleTimeout = defaultIdleAuthorityDeleteTimeout
+	}
+	return NewWithConfigForTesting(cfg, opts.WatchExpiryTimeout, opts.AuthorityIdleTimeout)
+}
+
 // NewWithConfigForTesting returns an xDS client for the specified bootstrap
 // config, separate from the global singleton.
 //
@@ -94,7 +149,6 @@ func newWithConfig(config *bootstrap.Config, watchExpiryTimeout time.Duration, i
 // # Testing Only
 //
 // This function should ONLY be used for testing purposes.
-// TODO(easwars): Document the new close func.
 func NewWithConfigForTesting(config *bootstrap.Config, watchExpiryTimeout, authorityIdleTimeout time.Duration) (XDSClient, func(), error) {
 	cl, err := newWithConfig(config, watchExpiryTimeout, authorityIdleTimeout)
 	if err != nil {
@@ -105,6 +159,7 @@ func NewWithConfigForTesting(config *bootstrap.Config, watchExpiryTimeout, autho
 
 func init() {
 	internal.TriggerXDSResourceNameNotFoundClient = triggerXDSResourceNameNotFoundClient
+	internal.NewXDSClientForTesting = NewForTesting
 }
 
 var singletonClientForTesting = atomic.Pointer[clientRefCounted]{}

@@ -22,14 +22,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
-	"testing"
 
-	"github.com/google/uuid"
-	"google.golang.org/grpc/internal"
 	"google.golang.org/grpc/internal/testutils/xds/bootstrap"
-	"google.golang.org/grpc/resolver"
 )
 
+/*
 // SetupManagementServer performs the following:
 // - spin up an xDS management server on a local port
 // - set up certificates for consumption by the file_watcher plugin
@@ -57,23 +54,31 @@ func SetupManagementServer(t *testing.T, opts ManagementServerOptions) (*Managem
 	}()
 
 	nodeID := uuid.New().String()
-	bootstrapContents, err := DefaultBootstrapContents(nodeID, server.Address)
+	bc, err := DefaultBootstrapContents(nodeID, server.Address)
 	if err != nil {
 		server.Stop()
 		t.Fatal(err)
 	}
+	xdsC, close, err := xdsclient.NewForTesting(xdsclient.ClientOptions{
+		bootstrapContents: bc,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create xDS client: %v", err)
+	}
+	t.Cleanup(func() { close() })
+
 	var rb resolver.Builder
 	if newResolver := internal.NewXDSResolverWithConfigForTesting; newResolver != nil {
-		rb, err = newResolver.(func([]byte) (resolver.Builder, error))(bootstrapContents)
+		rb, err = newResolver.(func(xdsclient.XDSClient) (resolver.Builder, error))(xdsC)
 		if err != nil {
 			server.Stop()
 			t.Fatalf("Failed to create xDS resolver for testing: %v", err)
 		}
 	}
 
-	return server, nodeID, bootstrapContents, rb, func() { server.Stop() }
+	return server, nodeID, bc, rb, func() { server.Stop() }
 }
-
+*/
 // DefaultBootstrapContents creates a default bootstrap configuration with the
 // given node ID and server URI. It also creates certificate provider
 // configuration and sets the listener resource name template to be used on the

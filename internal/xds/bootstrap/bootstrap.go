@@ -411,6 +411,13 @@ func NewConfig() (*Config, error) {
 // NewConfigFromContents returns a new Config using the specified
 // bootstrap file contents instead of reading the environment variable.
 func NewConfigFromContents(data []byte) (*Config, error) {
+	// Normalize the contents
+	buf := bytes.Buffer{}
+	err := json.Indent(&buf, data, "", "")
+	if err != nil {
+		return nil, fmt.Errorf("xds: error normalizing JSON: %v", err)
+	}
+	data = bytes.TrimSpace(buf.Bytes())
 	return newConfigFromContents(data)
 }
 

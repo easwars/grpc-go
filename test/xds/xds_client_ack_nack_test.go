@@ -35,6 +35,8 @@ import (
 	v3discoverypb "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	testgrpc "google.golang.org/grpc/interop/grpc_testing"
 	testpb "google.golang.org/grpc/interop/grpc_testing"
+
+	_ "google.golang.org/grpc/xds"
 )
 
 // We are interested in LDS, RDS, CDS and EDS resources as part of the regular

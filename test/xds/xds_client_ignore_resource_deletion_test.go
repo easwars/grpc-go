@@ -286,8 +286,8 @@ func generateBootstrapContents(t *testing.T, serverURI string, ignoreResourceDel
 // as parameter.
 func xdsResolverBuilder(t *testing.T, bs []byte) resolver.Builder {
 	t.Helper()
-	resolverBuilder := internal.NewXDSResolverWithConfigForTesting.(func([]byte) (resolver.Builder, error))
-	xdsR, err := resolverBuilder(bs)
+	resolverBuilder := internal.NewXDSResolverForTesting.(func(*testing.T, []byte) (resolver.Builder, error))
+	xdsR, err := resolverBuilder(t, bs)
 	if err != nil {
 		t.Fatalf("Creating xDS resolver for testing failed for config %q: %v", string(bs), err)
 	}

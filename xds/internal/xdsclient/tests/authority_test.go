@@ -89,15 +89,20 @@ func setupForAuthorityTests(ctx context.Context, t *testing.T, idleTimeout time.
 	// have empty server configs, and therefore end up using the default server
 	// config, which points to the above management server.
 	nodeID := uuid.New().String()
-	client, close, err := xdsclient.NewWithConfigForTesting(&bootstrap.Config{
-		XDSServer: xdstestutils.ServerConfigForAddress(t, defaultAuthorityServer.Address),
-		NodeProto: &v3corepb.Node{Id: nodeID},
-		Authorities: map[string]*bootstrap.Authority{
-			testAuthority1: {},
-			testAuthority2: {},
-			testAuthority3: {XDSServer: xdstestutils.ServerConfigForAddress(t, nonDefaultAuthorityServer.Address)},
+	client, close, err := xdsclient.NewForTesting(xdsclient.ClientOptionsForTesting{
+		Name: t.Name(),
+		BootstrapConfig: &bootstrap.Config{
+			XDSServer: xdstestutils.ServerConfigForAddress(t, defaultAuthorityServer.Address),
+			NodeProto: &v3corepb.Node{Id: nodeID},
+			Authorities: map[string]*bootstrap.Authority{
+				testAuthority1: {},
+				testAuthority2: {},
+				testAuthority3: {XDSServer: xdstestutils.ServerConfigForAddress(t, nonDefaultAuthorityServer.Address)},
+			},
 		},
-	}, defaultTestWatchExpiryTimeout, idleTimeout)
+		WatchExpiryTimeout:   defaultTestWatchExpiryTimeout,
+		AuthorityIdleTimeout: idleTimeout,
+	})
 	if err != nil {
 		t.Fatalf("failed to create xds client: %v", err)
 	}

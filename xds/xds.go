@@ -29,6 +29,7 @@ package xds
 
 import (
 	"fmt"
+	"testing"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/grpclog"
@@ -94,6 +95,6 @@ func init() {
 //
 // Notice: This API is EXPERIMENTAL and may be changed or removed in a
 // later release.
-func NewXDSResolverWithConfigForTesting(bootstrapConfig []byte) (resolver.Builder, error) {
-	return internal.NewXDSResolverWithConfigForTesting.(func([]byte) (resolver.Builder, error))(bootstrapConfig)
+func NewXDSResolverWithConfigForTesting(t *testing.T, bootstrapConfig []byte) (resolver.Builder, error) {
+	return internal.NewXDSResolverForTesting.(func(*testing.T, []byte) (resolver.Builder, error))(t, bootstrapConfig)
 }

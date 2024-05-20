@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/balancer"
 	"google.golang.org/grpc/codes"
@@ -43,6 +44,7 @@ import (
 	"google.golang.org/grpc/serviceconfig"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/xds/internal/balancer/clusterresolver"
+	xdstestutils "google.golang.org/grpc/xds/internal/testutils"
 	"google.golang.org/grpc/xds/internal/xdsclient"
 	"google.golang.org/grpc/xds/internal/xdsclient/xdsresource"
 	"google.golang.org/grpc/xds/internal/xdsclient/xdsresource/version"
@@ -204,7 +206,7 @@ func setupWithManagementServer(t *testing.T) (*e2e.ManagementServer, string, *gr
 
 	cdsResourceRequestedCh := make(chan []string, 1)
 	cdsResourceCanceledCh := make(chan struct{}, 1)
-	mgmtServer, nodeID, bootstrapContents, _, cleanup := e2e.SetupManagementServer(t, e2e.ManagementServerOptions{
+	mgmtServer, err := e2e.StartManagementServer(e2e.ManagementServerOptions{
 		OnStreamRequest: func(_ int64, req *v3discoverypb.DiscoveryRequest) error {
 			if req.GetTypeUrl() == version.V3ClusterURL {
 				switch len(req.GetResourceNames()) {
@@ -226,12 +228,13 @@ func setupWithManagementServer(t *testing.T) (*e2e.ManagementServer, string, *gr
 		// at once.
 		AllowResourceSubset: true,
 	})
-	t.Cleanup(cleanup)
-
-	xdsC, xdsClose, err := xdsclient.NewWithBootstrapContentsForTesting(bootstrapContents)
 	if err != nil {
-		t.Fatalf("Failed to create xDS client: %v", err)
+		t.Fatalf("Failed to spin up the xDS management server: %v", err)
 	}
+	t.Cleanup(mgmtServer.Stop)
+
+	nodeID := uuid.New().String()
+	xdsC, xdsClose := xdstestutils.SetupXDSClient(t, nodeID, mgmtServer.Address)
 	t.Cleanup(xdsClose)
 
 	r := manual.NewBuilderWithScheme("whatever")
@@ -341,13 +344,16 @@ func (s) TestConfigurationUpdate_Success(t *testing.T) {
 // Tests the case where a configuration with an empty cluster name is pushed to
 // the CDS LB policy. Verifies that ErrBadResolverState is returned.
 func (s) TestConfigurationUpdate_EmptyCluster(t *testing.T) {
-	// Setup a management server and an xDS client to talk to it.
-	_, _, bootstrapContents, _, cleanup := e2e.SetupManagementServer(t, e2e.ManagementServerOptions{})
-	t.Cleanup(cleanup)
-	xdsClient, xdsClose, err := xdsclient.NewWithBootstrapContentsForTesting(bootstrapContents)
+	// Spin up an xDS management server.
+	mgmtServer, err := e2e.StartManagementServer(e2e.ManagementServerOptions{})
 	if err != nil {
-		t.Fatalf("Failed to create xDS client: %v", err)
+		t.Fatalf("Failed to spin up the xDS management server: %v", err)
 	}
+	t.Cleanup(mgmtServer.Stop)
+
+	// Setup an xDS client to talk to the above management server.
+	nodeID := uuid.New().String()
+	xdsClient, xdsClose := xdstestutils.SetupXDSClient(t, nodeID, mgmtServer.Address)
 	t.Cleanup(xdsClose)
 
 	// Create a manual resolver that configures the CDS LB policy as the
