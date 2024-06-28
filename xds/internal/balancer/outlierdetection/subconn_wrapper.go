@@ -43,7 +43,7 @@ type subConnWrapper struct {
 	latestState balancer.SubConnState
 	ejected     bool
 
-	scUpdateCh *buffer.Unbounded
+	scUpdateCh *buffer.Unbounded[any]
 
 	// addresses is the list of address(es) this SubConn was created with to
 	// help support any change in address(es)

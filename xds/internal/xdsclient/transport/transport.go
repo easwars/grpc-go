@@ -79,8 +79,8 @@ type Transport struct {
 	// These channels enable synchronization amongst the different goroutines
 	// spawned by the transport, and between asynchorous events resulting from
 	// receipt of responses from the management server.
-	adsStreamCh  chan adsStream    // New ADS streams are pushed here.
-	adsRequestCh *buffer.Unbounded // Resource and ack requests are pushed here.
+	adsStreamCh  chan adsStream         // New ADS streams are pushed here.
+	adsRequestCh *buffer.Unbounded[any] // Resource and ack requests are pushed here.
 
 	// mu guards the following runtime state maintained by the transport.
 	mu sync.Mutex
@@ -218,7 +218,7 @@ func New(opts Options) (*Transport, error) {
 		logger:         opts.Logger,
 
 		adsStreamCh:     make(chan adsStream, 1),
-		adsRequestCh:    buffer.NewUnbounded(),
+		adsRequestCh:    buffer.NewUnbounded[any](),
 		resources:       make(map[string]map[string]bool),
 		versions:        make(map[string]string),
 		nonces:          make(map[string]string),

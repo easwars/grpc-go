@@ -65,7 +65,7 @@ func (bb) Build(cc balancer.ClientConn, bOpts balancer.BuildOptions) balancer.Ba
 		closed:          grpcsync.NewEvent(),
 		done:            grpcsync.NewEvent(),
 		loadWrapper:     loadstore.NewWrapper(),
-		pickerUpdateCh:  buffer.NewUnbounded(),
+		pickerUpdateCh:  buffer.NewUnbounded[any](),
 		requestCountMax: defaultRequestCountMax,
 	}
 	b.logger = prefixLogger(b)
@@ -124,7 +124,7 @@ type clusterImplBalancer struct {
 	requestCounter        *xdsclient.ClusterRequestsCounter
 	requestCountMax       uint32
 	telemetryLabels       map[string]string
-	pickerUpdateCh        *buffer.Unbounded
+	pickerUpdateCh        *buffer.Unbounded[any]
 }
 
 // updateLoadStore checks the config for load store, and decides whether it

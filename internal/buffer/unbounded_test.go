@@ -18,11 +18,11 @@
 package buffer
 
 import (
-	"reflect"
 	"sort"
 	"sync"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"google.golang.org/grpc/internal/grpctest"
 )
 
@@ -54,7 +54,7 @@ func init() {
 // TestSingleWriter starts one reader and one writer goroutine and makes sure
 // that the reader gets all the values added to the buffer by the writer.
 func (s) TestSingleWriter(t *testing.T) {
-	ub := NewUnbounded()
+	ub := NewUnbounded[int]()
 	reads := []int{}
 
 	var wg sync.WaitGroup
@@ -64,7 +64,7 @@ func (s) TestSingleWriter(t *testing.T) {
 		ch := ub.Get()
 		for i := 0; i < numWriters*numWrites; i++ {
 			r := <-ch
-			reads = append(reads, r.(int))
+			reads = append(reads, r)
 			ub.Load()
 		}
 	}()
@@ -80,7 +80,7 @@ func (s) TestSingleWriter(t *testing.T) {
 	}()
 
 	wg.Wait()
-	if !reflect.DeepEqual(reads, wantReads) {
+	if !cmp.Equal(reads, wantReads) {
 		t.Errorf("reads: %#v, wantReads: %#v", reads, wantReads)
 	}
 }
@@ -88,7 +88,7 @@ func (s) TestSingleWriter(t *testing.T) {
 // TestMultipleWriters starts multiple writers and one reader goroutine and
 // makes sure that the reader gets all the data written by all writers.
 func (s) TestMultipleWriters(t *testing.T) {
-	ub := NewUnbounded()
+	ub := NewUnbounded[int]()
 	reads := []int{}
 
 	var wg sync.WaitGroup
@@ -98,7 +98,7 @@ func (s) TestMultipleWriters(t *testing.T) {
 		ch := ub.Get()
 		for i := 0; i < numWriters*numWrites; i++ {
 			r := <-ch
-			reads = append(reads, r.(int))
+			reads = append(reads, r)
 			ub.Load()
 		}
 	}()
@@ -115,7 +115,7 @@ func (s) TestMultipleWriters(t *testing.T) {
 
 	wg.Wait()
 	sort.Ints(reads)
-	if !reflect.DeepEqual(reads, wantReads) {
+	if !cmp.Equal(reads, wantReads) {
 		t.Errorf("reads: %#v, wantReads: %#v", reads, wantReads)
 	}
 }
@@ -123,7 +123,7 @@ func (s) TestMultipleWriters(t *testing.T) {
 // TestClose closes the buffer and makes sure that nothing is sent after the
 // buffer is closed.
 func (s) TestClose(t *testing.T) {
-	ub := NewUnbounded()
+	ub := NewUnbounded[int]()
 	if err := ub.Put(1); err != nil {
 		t.Fatalf("Unbounded.Put() = %v; want nil", err)
 	}

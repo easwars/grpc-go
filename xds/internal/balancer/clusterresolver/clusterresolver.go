@@ -74,7 +74,7 @@ func (bb) Build(cc balancer.ClientConn, opts balancer.BuildOptions) balancer.Bal
 
 	b := &clusterResolverBalancer{
 		bOpts:    opts,
-		updateCh: buffer.NewUnbounded(),
+		updateCh: buffer.NewUnbounded[any](),
 		closed:   grpcsync.NewEvent(),
 		done:     grpcsync.NewEvent(),
 
@@ -154,7 +154,7 @@ type exitIdle struct{}
 type clusterResolverBalancer struct {
 	cc              balancer.ClientConn
 	bOpts           balancer.BuildOptions
-	updateCh        *buffer.Unbounded // Channel for updates from gRPC.
+	updateCh        *buffer.Unbounded[any] // Channel for updates from gRPC.
 	resourceWatcher *resourceResolver
 	logger          *grpclog.PrefixLogger
 	closed          *grpcsync.Event

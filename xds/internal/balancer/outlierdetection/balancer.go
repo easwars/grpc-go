@@ -66,8 +66,8 @@ func (bb) Build(cc balancer.ClientConn, bOpts balancer.BuildOptions) balancer.Ba
 		done:           grpcsync.NewEvent(),
 		addrs:          make(map[string]*addressInfo),
 		scWrappers:     make(map[balancer.SubConn]*subConnWrapper),
-		scUpdateCh:     buffer.NewUnbounded(),
-		pickerUpdateCh: buffer.NewUnbounded(),
+		scUpdateCh:     buffer.NewUnbounded[any](),
+		pickerUpdateCh: buffer.NewUnbounded[any](),
 		channelzParent: bOpts.ChannelzParent,
 	}
 	b.logger = prefixLogger(b)
@@ -202,8 +202,8 @@ type outlierDetectionBalancer struct {
 	updateUnconditionally bool
 	numAddrsEjected       int // For fast calculations of percentage of addrs ejected
 
-	scUpdateCh     *buffer.Unbounded
-	pickerUpdateCh *buffer.Unbounded
+	scUpdateCh     *buffer.Unbounded[any]
+	pickerUpdateCh *buffer.Unbounded[any]
 }
 
 // noopConfig returns whether this balancer is configured with a logical no-op
