@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"google.golang.org/grpc/grpclog"
 	"google.golang.org/grpc/internal/backoff"
 	"google.golang.org/grpc/internal/grpcsync"
 	"google.golang.org/grpc/internal/xds/bootstrap"
@@ -39,20 +40,26 @@ var (
 )
 
 func clientRefCountedClose(name string) {
-	clientsMu.Lock()
-	defer clientsMu.Unlock()
+	grpclog.Infof("easwars: clientRefCountedClose in for name %q", name)
 
+	clientsMu.Lock()
 	client, ok := clients[name]
 	if !ok {
 		logger.Errorf("Attempt to close a non-existent xDS client with name %s", name)
+		clientsMu.Unlock()
 		return
 	}
 	if client.decrRef() != 0 {
+		clientsMu.Unlock()
 		return
 	}
+	delete(clients, name)
+	clientsMu.Unlock()
+
+	// Closing the clientImpl ends up closing the channel to the management
+	// server which can take a while. So, don't hold the lock when doing this.
 	client.clientImpl.close()
 	xdsClientImplCloseHook(name)
-	delete(clients, name)
 
 }
 
@@ -60,6 +67,7 @@ func clientRefCountedClose(name string) {
 // name, if one does not exist already. If an xDS client for the given name
 // exists, it gets a reference to it and returns it.
 func newRefCounted(name string, config *bootstrap.Config, watchExpiryTimeout time.Duration, streamBackoff func(int) time.Duration) (XDSClient, func(), error) {
+	grpclog.Infof("easwars: in newRefCounted for name %q", name)
 	clientsMu.Lock()
 	defer clientsMu.Unlock()
 

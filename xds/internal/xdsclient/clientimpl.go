@@ -145,6 +145,7 @@ func (c *clientImpl) close() {
 		return
 	}
 	c.done.Fire()
+	c.logger.Infof("Starting shutdown")
 
 	c.topLevelAuthority.close()
 	for _, a := range c.authorities {
