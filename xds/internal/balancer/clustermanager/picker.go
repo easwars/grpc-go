@@ -23,6 +23,7 @@ import (
 
 	"google.golang.org/grpc/balancer"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/grpclog"
 	"google.golang.org/grpc/status"
 )
 
@@ -33,6 +34,7 @@ type pickerGroup struct {
 }
 
 func newPickerGroup(idToPickerState map[string]*subBalancerState) *pickerGroup {
+	grpclog.Infof("New picker group created with pickers: %v", idToPickerState)
 	pickers := make(map[string]balancer.Picker)
 	for id, st := range idToPickerState {
 		pickers[id] = st.state.Picker
@@ -43,6 +45,7 @@ func newPickerGroup(idToPickerState map[string]*subBalancerState) *pickerGroup {
 }
 
 func (pg *pickerGroup) Pick(info balancer.PickInfo) (balancer.PickResult, error) {
+	grpclog.Infof("easwars: Picker group %v picked", pg.pickers)
 	cluster := getPickedCluster(info.Ctx)
 	if p := pg.pickers[cluster]; p != nil {
 		return p.Pick(info)

@@ -26,6 +26,7 @@ import (
 
 	"google.golang.org/grpc/balancer"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/grpclog"
 	"google.golang.org/grpc/internal/channelz"
 	istatus "google.golang.org/grpc/internal/status"
 	"google.golang.org/grpc/internal/transport"
@@ -65,6 +66,7 @@ func newPickerWrapper(statsHandlers []stats.Handler) *pickerWrapper {
 // updatePicker is called by UpdateState calls from the LB policy. It
 // unblocks all blocked pick.
 func (pw *pickerWrapper) updatePicker(p balancer.Picker) {
+	grpclog.Infof("easwars: in picker_wrapper.updatePicker: %+v", p)
 	old := pw.pickerGen.Swap(&pickerGeneration{
 		picker:     p,
 		blockingCh: make(chan struct{}),

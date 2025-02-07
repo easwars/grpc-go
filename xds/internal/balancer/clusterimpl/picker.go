@@ -25,6 +25,7 @@ import (
 	"google.golang.org/grpc/balancer"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc/grpclog"
 	"google.golang.org/grpc/internal/stats"
 	"google.golang.org/grpc/internal/wrr"
 	"google.golang.org/grpc/status"
@@ -99,6 +100,7 @@ func telemetryLabels(ctx context.Context) map[string]string {
 }
 
 func (d *picker) Pick(info balancer.PickInfo) (balancer.PickResult, error) {
+	grpclog.Infof("easwars: Picker picked")
 	// Unconditionally set labels if present, even dropped or queued RPC's can
 	// use these labels.
 	if labels := telemetryLabels(info.Ctx); labels != nil {

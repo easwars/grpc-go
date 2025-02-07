@@ -26,12 +26,14 @@
 package weightedaggregator
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 
 	"google.golang.org/grpc/balancer"
 	"google.golang.org/grpc/balancer/base"
 	"google.golang.org/grpc/connectivity"
+	externalgrpclog "google.golang.org/grpc/grpclog"
 	"google.golang.org/grpc/internal/grpclog"
 	"google.golang.org/grpc/internal/wrr"
 )
@@ -260,6 +262,13 @@ func (wbsa *Aggregator) build() balancer.State {
 			ConnectivityState: aggState,
 			Picker:            base.NewErrPicker(balancer.ErrNoSubConnAvailable)}
 	case connectivity.TransientFailure:
+		wbsa.logger.Infof("easwars: we do get TF")
+		if len(wbsa.idToPickerState) == 0 {
+			return balancer.State{
+				ConnectivityState: connectivity.TransientFailure,
+				Picker:            base.NewErrPicker(errors.New("no targets to pick from")),
+			}
+		}
 		// this means that all sub-balancers are now in TransientFailure.
 		for _, ps := range wbsa.idToPickerState {
 			pickers = append(pickers, *ps)
@@ -301,8 +310,10 @@ func newWeightedPickerGroup(readyWeightedPickers []weightedPickerState, newWRR f
 }
 
 func (pg *weightedPickerGroup) Pick(info balancer.PickInfo) (balancer.PickResult, error) {
+	externalgrpclog.Infof("easwars: Weighted picker group %v picked", pg.w)
 	p, ok := pg.w.Next().(balancer.Picker)
 	if !ok {
+		externalgrpclog.Infof("easwars: returning ErrNoSubConnAvailable")
 		return balancer.PickResult{}, balancer.ErrNoSubConnAvailable
 	}
 	return p.Pick(info)

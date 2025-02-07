@@ -163,6 +163,7 @@ func (b *priorityBalancer) switchToChild(child *childBalancer, priority int) {
 	// - a high priority is READY, an config update always triggers switch to
 	// it.
 	if b.childInUse == child.name && child.started {
+		b.logger.Infof("easwars: switch didn't actually happen")
 		return
 	}
 	b.childInUse = child.name

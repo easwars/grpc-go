@@ -152,6 +152,7 @@ func (bsa *balancerStateAggregator) UpdateState(id string, state balancer.State)
 	if !ok {
 		// All state starts with an entry in pickStateMap. If ID is not in map,
 		// it's either removed, or never existed.
+		bsa.logger.Infof("easwars: sub-balancer %q is not found", id)
 		return
 	}
 	if !(pickerSt.state.ConnectivityState == connectivity.TransientFailure && state.ConnectivityState == connectivity.Connecting) {
@@ -161,6 +162,7 @@ func (bsa *balancerStateAggregator) UpdateState(id string, state balancer.State)
 		// state.ConnectivityState.
 		bsa.csEval.RecordTransition(pickerSt.stateToAggregate, state.ConnectivityState)
 		pickerSt.stateToAggregate = state.ConnectivityState
+		bsa.logger.Infof("easwars: new stateToAggregate: %v", pickerSt.stateToAggregate)
 	}
 	pickerSt.state = state
 	bsa.buildAndUpdateLocked()

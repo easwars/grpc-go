@@ -105,6 +105,7 @@ func (b *weightedTargetBalancer) UpdateClientConnState(s balancer.ClientConnStat
 
 	newConfig, ok := s.BalancerConfig.(*LBConfig)
 	if !ok {
+		b.logger.Infof("easwars: wrong balancer config type: %T", s.BalancerConfig)
 		return fmt.Errorf("unexpected balancer config with type: %T", s.BalancerConfig)
 	}
 	addressesSplit := hierarchy.Group(s.ResolverState.Addresses)
@@ -175,6 +176,7 @@ func (b *weightedTargetBalancer) UpdateClientConnState(s balancer.ClientConnStat
 	// policies, the aggregated connectivity state reported form the Aggregator
 	// will be TRANSIENT_FAILURE.
 	if len(b.targets) == 0 {
+		b.logger.Infof("easwars: len(targets) == 0, setting needUpdateStateOnResume to true")
 		b.stateAggregator.NeedUpdateStateOnResume()
 	}
 
