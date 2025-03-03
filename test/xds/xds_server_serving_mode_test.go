@@ -62,7 +62,7 @@ func (s) TestServerSideXDS_RedundantUpdateSuppression(t *testing.T) {
 
 	// Create a server option to get notified about serving mode changes.
 	modeChangeOpt := xds.ServingModeCallback(func(addr net.Addr, args xds.ServingModeChangeArgs) {
-		t.Logf("serving mode for listener %q changed to %q, err: %v", addr.String(), args.Mode, args.Err)
+		t.Logf("Serving mode for listener %q changed to %q, err: %v", addr.String(), args.Mode, args.Err)
 		updateCh <- args.Mode
 	})
 
@@ -74,7 +74,7 @@ func (s) TestServerSideXDS_RedundantUpdateSuppression(t *testing.T) {
 	// Setup the management server to respond with the listener resources.
 	host, port, err := hostPortFromListener(lis)
 	if err != nil {
-		t.Fatalf("failed to retrieve host and port of server: %v", err)
+		t.Fatalf("Failed to retrieve host and port of server: %v", err)
 	}
 	listener := e2e.DefaultServerListener(host, port, e2e.SecurityLevelNone, "routeName")
 	resources := e2e.UpdateOptions{
@@ -90,17 +90,17 @@ func (s) TestServerSideXDS_RedundantUpdateSuppression(t *testing.T) {
 	// Wait for the listener to move to "serving" mode.
 	select {
 	case <-ctx.Done():
-		t.Fatalf("timed out waiting for a mode change update: %v", err)
+		t.Fatalf("Timed out waiting for a mode change update: %v", err)
 	case mode := <-updateCh:
 		if mode != connectivity.ServingModeServing {
-			t.Fatalf("listener received new mode %v, want %v", mode, connectivity.ServingModeServing)
+			t.Fatalf("Listener received new mode %v, want %v", mode, connectivity.ServingModeServing)
 		}
 	}
 
 	// Create a ClientConn and make a successful RPCs.
 	cc, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		t.Fatalf("failed to dial local test server: %v", err)
+		t.Fatalf("grpc.NewClient(%q) failed: %v", lis.Addr(), err)
 	}
 	defer cc.Close()
 	waitForSuccessfulRPC(ctx, t, cc)
@@ -143,7 +143,7 @@ func (s) TestServerSideXDS_RedundantUpdateSuppression(t *testing.T) {
 	select {
 	case <-sCtx.Done():
 	case mode := <-updateCh:
-		t.Fatalf("unexpected mode change callback with new mode %v", mode)
+		t.Fatalf("Unexpected mode change callback with new mode %v", mode)
 	}
 
 	// Make sure RPCs continue to succeed.
@@ -190,14 +190,14 @@ func (s) TestServerSideXDS_ServingModeChanges(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
 	defer cancel()
 	modeChangeOpt := xds.ServingModeCallback(func(addr net.Addr, args xds.ServingModeChangeArgs) {
-		t.Logf("serving mode for listener %q changed to %q, err: %v", addr.String(), args.Mode, args.Err)
+		t.Logf("Serving mode for listener %q changed to %q, err: %v", addr.String(), args.Mode, args.Err)
 		switch addr.String() {
 		case lis1.Addr().String():
 			updateCh1 <- args.Mode
 		case lis2.Addr().String():
 			updateCh2 <- args.Mode
 		default:
-			t.Errorf("serving mode callback invoked for unknown listener address: %q", addr.String())
+			t.Errorf("Serving mode callback invoked for unknown listener address: %q", addr.String())
 		}
 	})
 
@@ -212,12 +212,12 @@ func (s) TestServerSideXDS_ServingModeChanges(t *testing.T) {
 	// resources for both listeners.
 	host1, port1, err := hostPortFromListener(lis1)
 	if err != nil {
-		t.Fatalf("failed to retrieve host and port of server: %v", err)
+		t.Fatalf("Failed to retrieve host and port of server: %v", err)
 	}
 	listener1 := e2e.DefaultServerListener(host1, port1, e2e.SecurityLevelNone, "routeName")
 	host2, port2, err := hostPortFromListener(lis2)
 	if err != nil {
-		t.Fatalf("failed to retrieve host and port of server: %v", err)
+		t.Fatalf("Failed to retrieve host and port of server: %v", err)
 	}
 	listener2 := e2e.DefaultServerListener(host2, port2, e2e.SecurityLevelNone, "routeName")
 	resources := e2e.UpdateOptions{
@@ -231,18 +231,18 @@ func (s) TestServerSideXDS_ServingModeChanges(t *testing.T) {
 	// Wait for both listeners to move to "serving" mode.
 	select {
 	case <-ctx.Done():
-		t.Fatalf("timed out waiting for a mode change update: %v", err)
+		t.Fatalf("Timed out waiting for a mode change update: %v", err)
 	case mode := <-updateCh1:
 		if mode != connectivity.ServingModeServing {
-			t.Fatalf("listener received new mode %v, want %v", mode, connectivity.ServingModeServing)
+			t.Fatalf("Listener received new mode %v, want %v", mode, connectivity.ServingModeServing)
 		}
 	}
 	select {
 	case <-ctx.Done():
-		t.Fatalf("timed out waiting for a mode change update: %v", err)
+		t.Fatalf("Timed out waiting for a mode change update: %v", err)
 	case mode := <-updateCh2:
 		if mode != connectivity.ServingModeServing {
-			t.Fatalf("listener received new mode %v, want %v", mode, connectivity.ServingModeServing)
+			t.Fatalf("Listener received new mode %v, want %v", mode, connectivity.ServingModeServing)
 		}
 	}
 
@@ -274,10 +274,10 @@ func (s) TestServerSideXDS_ServingModeChanges(t *testing.T) {
 	// Wait for lis2 to move to "not-serving" mode.
 	select {
 	case <-ctx.Done():
-		t.Fatalf("timed out waiting for a mode change update: %v", err)
+		t.Fatalf("Timed out waiting for a mode change update: %v", err)
 	case mode := <-updateCh2:
 		if mode != connectivity.ServingModeNotServing {
-			t.Fatalf("listener received new mode %v, want %v", mode, connectivity.ServingModeNotServing)
+			t.Fatalf("Listener received new mode %v, want %v", mode, connectivity.ServingModeNotServing)
 		}
 	}
 
@@ -300,10 +300,10 @@ func (s) TestServerSideXDS_ServingModeChanges(t *testing.T) {
 	// invoked this time around.
 	select {
 	case <-ctx.Done():
-		t.Fatalf("timed out waiting for a mode change update: %v", err)
+		t.Fatalf("Timed out waiting for a mode change update: %v", err)
 	case mode := <-updateCh1:
 		if mode != connectivity.ServingModeNotServing {
-			t.Fatalf("listener received new mode %v, want %v", mode, connectivity.ServingModeNotServing)
+			t.Fatalf("Listener received new mode %v, want %v", mode, connectivity.ServingModeNotServing)
 		}
 	}
 
@@ -332,18 +332,18 @@ func (s) TestServerSideXDS_ServingModeChanges(t *testing.T) {
 	// Wait for both listeners to move to "serving" mode.
 	select {
 	case <-ctx.Done():
-		t.Fatalf("timed out waiting for a mode change update: %v", err)
+		t.Fatalf("Timed out waiting for a mode change update: %v", err)
 	case mode := <-updateCh1:
 		if mode != connectivity.ServingModeServing {
-			t.Fatalf("listener received new mode %v, want %v", mode, connectivity.ServingModeServing)
+			t.Fatalf("Listener received new mode %v, want %v", mode, connectivity.ServingModeServing)
 		}
 	}
 	select {
 	case <-ctx.Done():
-		t.Fatalf("timed out waiting for a mode change update: %v", err)
+		t.Fatalf("Timed out waiting for a mode change update: %v", err)
 	case mode := <-updateCh2:
 		if mode != connectivity.ServingModeServing {
-			t.Fatalf("listener received new mode %v, want %v", mode, connectivity.ServingModeServing)
+			t.Fatalf("Listener received new mode %v, want %v", mode, connectivity.ServingModeServing)
 		}
 	}
 

@@ -84,6 +84,7 @@ func NewListenerWrapper(params ListenerWrapperParams) net.Listener {
 		Listener:          params.Listener,
 		name:              params.ListenerResourceName,
 		xdsC:              params.XDSClient,
+		xdsNodeID:         params.XDSClient.BootstrapConfig().Node().GetId(),
 		modeCallback:      params.ModeCallback,
 		isUnspecifiedAddr: params.Listener.Addr().(*net.TCPAddr).IP.IsUnspecified(),
 		conns:             make(map[*connWrapper]bool),
@@ -116,6 +117,7 @@ type listenerWrapper struct {
 
 	name         string
 	xdsC         XDSClient
+	xdsNodeID    string
 	cancelWatch  func()
 	modeCallback ServingModeCallback
 
@@ -173,7 +175,8 @@ func (l *listenerWrapper) handleLDSUpdate(update xdsresource.ListenerUpdate) {
 	// what we have decided to do.
 	if ilc.Address != l.addr || ilc.Port != l.port {
 		l.mu.Lock()
-		l.switchModeLocked(connectivity.ServingModeNotServing, fmt.Errorf("address (%s:%s) in Listener update does not match listening address: (%s:%s)", ilc.Address, ilc.Port, l.addr, l.port))
+		err := l.annotateErrorWithNodeID(fmt.Errorf("address (%s:%s) in Listener update does not match listening address: (%s:%s)", ilc.Address, ilc.Port, l.addr, l.port))
+		l.switchModeLocked(connectivity.ServingModeNotServing, err)
 		l.mu.Unlock()
 		return
 	}
@@ -397,10 +400,14 @@ func (l *listenerWrapper) switchModeLocked(newMode connectivity.ServingMode, err
 	}
 }
 
+func (l *listenerWrapper) annotateErrorWithNodeID(err error) error {
+	return fmt.Errorf("[xDS node id: %v]: %w", l.xdsNodeID, err)
+}
+
 func (l *listenerWrapper) onLDSResourceDoesNotExist(err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.switchModeLocked(connectivity.ServingModeNotServing, err)
+	l.switchModeLocked(connectivity.ServingModeNotServing, l.annotateErrorWithNodeID(err))
 	l.activeFilterChainManager = nil
 	l.pendingFilterChainManager = nil
 	l.rdsHandler.updateRouteNamesToWatch(make(map[string]bool))
