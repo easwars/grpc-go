@@ -28,19 +28,10 @@ import (
 	"fmt"
 
 	"google.golang.org/grpc/internal/xds/bootstrap"
-	xdsinternal "google.golang.org/grpc/xds/internal"
 	"google.golang.org/grpc/xds/internal/clients/xdsclient"
-	"google.golang.org/grpc/xds/internal/xdsclient/xdsresource/version"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
-
-func init() {
-	xdsinternal.ResourceTypeMapForTesting = make(map[string]any)
-	xdsinternal.ResourceTypeMapForTesting[version.V3ListenerURL] = listenerType
-	xdsinternal.ResourceTypeMapForTesting[version.V3RouteConfigURL] = routeConfigType
-	xdsinternal.ResourceTypeMapForTesting[version.V3ClusterURL] = clusterType
-	xdsinternal.ResourceTypeMapForTesting[version.V3EndpointsURL] = endpointsType
-}
 
 // Producer contains a single method to discover resource configuration from a
 // remote management server using xDS APIs.
@@ -53,6 +44,7 @@ type Producer interface {
 	// xDS management server. Upon receipt of a response from the management
 	// server, an appropriate callback on the watcher is invoked.
 	WatchResource(rType Type, resourceName string, watcher ResourceWatcher) (cancel func())
+	GenericWatchResource(typeURL, resourceName string, watcher xdsclient.ResourceWatcher) (cancel func())
 }
 
 // ResourceWatcher is notified of the resource updates and errors that are
@@ -185,7 +177,11 @@ type GenericResourceTypeDecoder struct {
 // Decode deserialize and validate resource bytes of an xDS resource received
 // from the xDS management server.
 func (gd *GenericResourceTypeDecoder) Decode(resourceBytes []byte, gOpts xdsclient.DecodeOptions) (*xdsclient.DecodeResult, error) {
-	raw := &anypb.Any{TypeUrl: gd.ResourceType.TypeURL(), Value: resourceBytes}
+	raw := &anypb.Any{}
+	if err := proto.Unmarshal(resourceBytes, raw); err != nil {
+		return nil, fmt.Errorf("error unmarshalling resource bytes into Any proto: %v", err)
+	}
+
 	opts := &DecodeOptions{BootstrapConfig: gd.BootstrapConfig}
 	if gOpts.ServerConfig != nil {
 		opts.ServerConfig = gd.ServerConfigMap[*gOpts.ServerConfig]

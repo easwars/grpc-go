@@ -26,12 +26,7 @@ import (
 
 func supportedResourceTypes(config *bootstrap.Config, gServerCfgMap map[xdsclient.ServerConfig]*bootstrap.ServerConfig) map[string]xdsclient.ResourceType {
 	return map[string]xdsclient.ResourceType{
-		version.V3ListenerURL: {
-			TypeURL:                    version.V3ListenerURL,
-			TypeName:                   xdsresource.ListenerResourceTypeName,
-			AllResourcesRequiredInSotW: true,
-			Decoder:                    xdsresource.NewGenericListenerResourceTypeDecoder(config),
-		},
+		version.V3ListenerURL: xdsresource.NewGenericListenerResourceTypeImplemetation(config),
 		version.V3RouteConfigURL: {
 			TypeURL:                    version.V3RouteConfigURL,
 			TypeName:                   xdsresource.RouteConfigTypeName,

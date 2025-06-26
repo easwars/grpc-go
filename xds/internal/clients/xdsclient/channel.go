@@ -31,6 +31,7 @@ import (
 	"google.golang.org/grpc/xds/internal/clients/internal/backoff"
 	"google.golang.org/grpc/xds/internal/clients/internal/syncutil"
 	"google.golang.org/grpc/xds/internal/clients/xdsclient/internal/xdsresource"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -266,7 +267,12 @@ func decodeResponse(opts *DecodeOptions, rType *ResourceType, resp response) (ma
 			topLevelErrors = append(topLevelErrors, xdsresource.NewErrorf(xdsresource.ErrorTypeResourceTypeUnsupported, "unexpected resource type: %q ", inner.GetTypeUrl()))
 			continue
 		}
-		result, err := rType.Decoder.Decode(r.GetValue(), *opts)
+		anyBytes, err := proto.Marshal(r)
+		if err != nil {
+			topLevelErrors = append(topLevelErrors, fmt.Errorf("failed to marshal resource into bytes: %v", err))
+			continue
+		}
+		result, err := rType.Decoder.Decode(anyBytes, *opts)
 
 		// Name field of the result is left unpopulated only when resource
 		// deserialization fails.

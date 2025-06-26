@@ -34,9 +34,11 @@ import (
 	"google.golang.org/grpc/xds/internal/clients/xdsclient"
 	"google.golang.org/grpc/xds/internal/clients/xdsclient/internal/xdsresource"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 
 	v3listenerpb "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	v3httppb "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	v3discoverypb "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"github.com/google/go-cmp/cmp"
 )
 
@@ -73,9 +75,9 @@ var (
 	}
 )
 
-func unmarshalListenerResource(r []byte) (string, listenerUpdate, error) {
+func unmarshalListenerResource(r *anypb.Any) (string, listenerUpdate, error) {
 	lis := &v3listenerpb.Listener{}
-	if err := proto.Unmarshal(r, lis); err != nil {
+	if err := proto.Unmarshal(r.GetValue(), lis); err != nil {
 		return "", listenerUpdate{}, fmt.Errorf("failed to unmarshal resource: %v", err)
 	}
 
@@ -83,7 +85,7 @@ func unmarshalListenerResource(r []byte) (string, listenerUpdate, error) {
 	if err != nil {
 		return lis.GetName(), listenerUpdate{}, err
 	}
-	lu.Raw = r
+	lu.Raw = r.GetValue()
 	return lis.GetName(), *lu, nil
 }
 
@@ -165,8 +167,23 @@ type listenerDecoder struct{}
 
 // Decode deserializes and validates an xDS resource serialized inside the
 // provided `Any` proto, as received from the xDS management server.
-func (listenerDecoder) Decode(resource []byte, _ xdsclient.DecodeOptions) (*xdsclient.DecodeResult, error) {
-	name, listener, err := unmarshalListenerResource(resource)
+func (listenerDecoder) Decode(resourceBytes []byte, _ xdsclient.DecodeOptions) (*xdsclient.DecodeResult, error) {
+	// Unmarshal the received resource bytes into an Any proto and unwrap to get
+	// to the actual resource proto, if required.
+	receivedAny := &anypb.Any{}
+	if err := proto.Unmarshal(resourceBytes, receivedAny); err != nil {
+		return nil, fmt.Errorf("listener resource: failed to unmarshal received resource into Any proto: %v", err)
+	}
+	url := receivedAny.GetTypeUrl()
+	if url == xdsresource.V3ResourceWrapperURL {
+		inner := &v3discoverypb.Resource{}
+		if err := proto.Unmarshal(receivedAny.GetValue(), inner); err != nil {
+			return nil, fmt.Errorf("listener resource: failed to unwrap received Any proto: %v", err)
+		}
+		receivedAny = inner.Resource
+	}
+
+	name, listener, err := unmarshalListenerResource(receivedAny)
 	switch {
 	case name == "":
 		// Name is unset only when protobuf deserialization fails.

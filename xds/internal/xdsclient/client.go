@@ -26,6 +26,7 @@ import (
 	v3statuspb "github.com/envoyproxy/go-control-plane/envoy/service/status/v3"
 	"google.golang.org/grpc/internal/xds/bootstrap"
 	"google.golang.org/grpc/xds/internal/clients/lrsclient"
+	"google.golang.org/grpc/xds/internal/clients/xdsclient"
 	"google.golang.org/grpc/xds/internal/xdsclient/xdsresource"
 )
 
@@ -43,11 +44,12 @@ type XDSClient interface {
 	// instead use a resource-type-specific wrapper API provided by the relevant
 	// resource type implementation.
 	//
-	//
 	// During a race (e.g. an xDS response is received while the user is calling
 	// cancel()), there's a small window where the callback can be called after
 	// the watcher is canceled. Callers need to handle this case.
 	WatchResource(rType xdsresource.Type, resourceName string, watcher xdsresource.ResourceWatcher) (cancel func())
+
+	GenericWatchResource(typeURL, resourceName string, watcher xdsclient.ResourceWatcher) (cancel func())
 
 	ReportLoad(*bootstrap.ServerConfig) (*lrsclient.LoadStore, func(context.Context))
 

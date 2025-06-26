@@ -33,6 +33,7 @@ import (
 	internalgrpclog "google.golang.org/grpc/internal/grpclog"
 	"google.golang.org/grpc/internal/grpcsync"
 	"google.golang.org/grpc/internal/xds/bootstrap"
+	"google.golang.org/grpc/xds/internal/clients/xdsclient"
 	"google.golang.org/grpc/xds/internal/xdsclient/xdsresource"
 )
 
@@ -59,6 +60,7 @@ type ServingModeCallback func(addr net.Addr, mode connectivity.ServingMode, err 
 // the listenerWrapper.
 type XDSClient interface {
 	WatchResource(rType xdsresource.Type, resourceName string, watcher xdsresource.ResourceWatcher) (cancel func())
+	GenericWatchResource(typeURL, resourceName string, watcher xdsclient.ResourceWatcher) (cancel func())
 	BootstrapConfig() *bootstrap.Config
 }
 
