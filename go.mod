@@ -6,7 +6,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/cncf/xds/go v0.0.0-20250501225837-2ac532fd4443
 	github.com/envoyproxy/go-control-plane v0.13.4
-	github.com/envoyproxy/go-control-plane/envoy v1.32.4
+	github.com/envoyproxy/go-control-plane/envoy v1.35.0
 	github.com/golang/glog v1.2.5
 	github.com/golang/protobuf v1.5.4
 	github.com/google/go-cmp v0.7.0
@@ -45,3 +45,9 @@ require (
 
 // v1.74.0 was published prematurely with known issues.
 retract [v1.74.0, v1.74.1]
+
+replace (
+	github.com/envoyproxy/go-control-plane => ../go-control-plane
+	github.com/envoyproxy/go-control-plane/envoy => ../go-control-plane/envoy
+	github.com/envoyproxy/go-control-plane/ratelimit => ../go-control-plane/ratelimit
+)
