@@ -51,7 +51,7 @@ func Test(t *testing.T) {
 
 const (
 	defaultTestWatchExpiryTimeout = 500 * time.Millisecond
-	defaultTestTimeout            = 10 * time.Second
+	defaultTestTimeout            = 5 * time.Second
 	defaultTestShortTimeout       = 10 * time.Millisecond // For events expected to *not* happen.
 
 	// ListenerResourceTypeName represents the transport agnostic name for the

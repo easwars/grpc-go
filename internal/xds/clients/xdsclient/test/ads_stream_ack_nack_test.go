@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/internal/xds/clients"
@@ -503,6 +504,161 @@ func (s) TestADS_ACK_NACK_ResourceIsNotRequestedAnymore(t *testing.T) {
 
 	// Verify the update received by the watcher.
 	if err := verifyListenerUpdate(ctx, lw.updateCh, wantUpdate); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (s) TestADS_ACK_NACK_ReproIssue431(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
+	defer cancel()
+
+	// Create an xDS management server listening on a local port. Configure the
+	// request and response handlers to push on channels that are inspected by
+	// the test goroutine to verify ACK version and nonce.
+	streamRequestCh := testutils.NewChannelWithSize(1)
+	// streamResponseCh := testutils.NewChannelWithSize(1)
+	// streamCloseCh := testutils.NewChannelWithSize(1)
+	mgmtServer := e2e.StartManagementServer(t, e2e.ManagementServerOptions{
+		OnStreamRequest: func(_ int64, req *v3discoverypb.DiscoveryRequest) error {
+			streamRequestCh.SendContext(ctx, req)
+			return nil
+		},
+		OnStreamResponse: func(_ context.Context, _ int64, _ *v3discoverypb.DiscoveryRequest, resp *v3discoverypb.DiscoveryResponse) {
+			// streamResponseCh.SendContext(ctx, resp)
+		},
+		OnStreamClosed: func(int64, *v3corepb.Node) {
+			// streamCloseCh.SendContext(ctx, struct{}{})
+		},
+		AllowResourceSubset: true,
+	})
+
+	// Create two listener resources on the management server.
+	const listenerA = "listener-A"
+	const listenerB = "listener-B"
+	const routeConfigA = "route-config-A"
+	const routeConfigB = "route-config-B"
+	nodeID := uuid.New().String()
+	listenerResourceA := e2e.DefaultClientListener(listenerA, routeConfigA)
+	listenerResourceB := e2e.DefaultClientListener(listenerB, routeConfigB)
+	resources := e2e.UpdateOptions{
+		NodeID:         nodeID,
+		Listeners:      []*v3listenerpb.Listener{listenerResourceA, listenerResourceB},
+		SkipValidation: true,
+	}
+	if err := mgmtServer.Update(ctx, resources); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create an xDS client pointing to the above server.
+	configs := map[string]grpctransport.Config{"insecure": {Credentials: insecure.NewBundle()}}
+	client := createXDSClient(t, mgmtServer.Address, nodeID, grpctransport.NewBuilder(configs))
+
+	// Register a watch for the two listener resources.
+	lwA := newListenerWatcher()
+	ldsCancelA := client.WatchResource(xdsresource.V3ListenerURL, listenerA, lwA)
+
+	lwB := newListenerWatcher()
+	ldsCancelB := client.WatchResource(xdsresource.V3ListenerURL, listenerB, lwB)
+	defer ldsCancelB()
+
+	for {
+		r, err := streamRequestCh.Receive(ctx)
+		if err != nil {
+			t.Fatal("Timeout when waiting for the initial discovery request")
+		}
+		names := r.(*v3discoverypb.DiscoveryRequest).GetResourceNames()
+		if cmp.Equal(names, []string{listenerA, listenerB}, cmpopts.SortSlices(func(i, j string) bool { return i < j })) {
+			break
+		}
+	}
+	/*
+		// Verify that the initial discovery request matches expectation.
+		r, err := streamRequestCh.Receive(ctx)
+		if err != nil {
+			t.Fatal("Timeout when waiting for the initial discovery request")
+		}
+		gotReq := r.(*v3discoverypb.DiscoveryRequest)
+		wantReq := &v3discoverypb.DiscoveryRequest{
+			VersionInfo: "",
+			Node: &v3corepb.Node{
+				Id:                   nodeID,
+				UserAgentName:        "user-agent",
+				UserAgentVersionType: &v3corepb.Node_UserAgentVersion{UserAgentVersion: "0.0.0.0"},
+				ClientFeatures:       []string{"envoy.lb.does_not_support_overprovisioning", "xds.config.resource-in-sotw"},
+			},
+			ResourceNames: []string{listenerA},
+			TypeUrl:       "type.googleapis.com/envoy.config.listener.v3.Listener",
+			ResponseNonce: "",
+		}
+		if diff := cmp.Diff(gotReq, wantReq, protocmp.Transform()); diff != "" {
+			t.Fatalf("Unexpected diff in received discovery request, diff (-got, +want):\n%s", diff)
+		}
+
+		// Capture the version and nonce from the response.
+		r, err = streamResponseCh.Receive(ctx)
+		if err != nil {
+			t.Fatal("Timeout when waiting for the discovery response from client")
+		}
+		gotResp := r.(*v3discoverypb.DiscoveryResponse)
+
+		// Verify that the ACK contains the appropriate version and nonce.
+		r, err = streamRequestCh.Receive(ctx)
+		if err != nil {
+			t.Fatal("Timeout when waiting for ACK")
+		}
+		gotReq = r.(*v3discoverypb.DiscoveryRequest)
+		wantACKReq := proto.Clone(wantReq).(*v3discoverypb.DiscoveryRequest)
+		wantACKReq.VersionInfo = gotResp.GetVersionInfo()
+		wantACKReq.ResponseNonce = gotResp.GetNonce()
+		if diff := cmp.Diff(gotReq, wantACKReq, protocmp.Transform()); diff != "" {
+			t.Fatalf("Unexpected diff in received discovery request, diff (-got, +want):\n%s", diff)
+		}
+	*/
+
+	// Verify the update received by the watchers.
+	wantUpdateA := listenerUpdateErrTuple{
+		update: listenerUpdate{RouteConfigName: routeConfigA},
+	}
+	if err := verifyListenerUpdate(ctx, lwA.updateCh, wantUpdateA); err != nil {
+		t.Fatal(err)
+	}
+	wantUpdateB := listenerUpdateErrTuple{
+		update: listenerUpdate{RouteConfigName: routeConfigB},
+	}
+	if err := verifyListenerUpdate(ctx, lwB.updateCh, wantUpdateB); err != nil {
+		t.Fatal(err)
+	}
+
+	// Cancel the watch on one listener resource.
+	ldsCancelA()
+	for {
+		r, err := streamRequestCh.Receive(ctx)
+		if err != nil {
+			t.Fatal("Timeout when waiting for the initial discovery request")
+		}
+		names := r.(*v3discoverypb.DiscoveryRequest).GetResourceNames()
+		if cmp.Equal(names, []string{listenerB}, cmpopts.SortSlices(func(i, j string) bool { return i < j })) {
+			break
+		}
+	}
+
+	// Register a watch for the same listener resource.
+	lwA = newListenerWatcher()
+	ldsCancelA = client.WatchResource(xdsresource.V3ListenerURL, listenerA, lwA)
+	defer ldsCancelA()
+	for {
+		r, err := streamRequestCh.Receive(ctx)
+		if err != nil {
+			t.Fatal("Timeout when waiting for the initial discovery request")
+		}
+		names := r.(*v3discoverypb.DiscoveryRequest).GetResourceNames()
+		if cmp.Equal(names, []string{listenerA, listenerB}, cmpopts.SortSlices(func(i, j string) bool { return i < j })) {
+			break
+		}
+	}
+
+	// Verify the update received by the watcher.
+	if err := verifyListenerUpdate(ctx, lwA.updateCh, wantUpdateA); err != nil {
 		t.Fatal(err)
 	}
 }
