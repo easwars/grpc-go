@@ -61,10 +61,10 @@ var statusMap = map[int]codes.Code{
 }
 
 func init() {
-	httpfilter.Register(builder{})
+	httpfilter.Register(provider{})
 }
 
-type builder struct {
+type provider struct {
 }
 
 type config struct {
@@ -72,7 +72,7 @@ type config struct {
 	config *fpb.HTTPFault
 }
 
-func (builder) TypeURLs() []string {
+func (provider) TypeURLs() []string {
 	return []string{"type.googleapis.com/envoy.extensions.filters.http.fault.v3.HTTPFault"}
 }
 
@@ -92,21 +92,37 @@ func parseConfig(cfg proto.Message) (httpfilter.FilterConfig, error) {
 	return config{config: msg}, nil
 }
 
-func (builder) ParseFilterConfig(cfg proto.Message) (httpfilter.FilterConfig, error) {
+func (provider) ParseFilterConfig(cfg proto.Message) (httpfilter.FilterConfig, error) {
 	return parseConfig(cfg)
 }
 
-func (builder) ParseFilterConfigOverride(override proto.Message) (httpfilter.FilterConfig, error) {
+func (provider) ParseFilterConfigOverride(override proto.Message) (httpfilter.FilterConfig, error) {
 	return parseConfig(override)
 }
 
-func (builder) IsTerminal() bool {
+func (provider) IsTerminal() bool {
 	return false
 }
 
-var _ httpfilter.ClientInterceptorBuilder = builder{}
+// Build creates a new instance of the filter.
+func (p provider) Build() (httpfilter.Filter, error) {
+	return p, nil
+}
 
-func (builder) BuildClientInterceptor(cfg, override httpfilter.FilterConfig) (iresolver.ClientInterceptor, error) {
+var _ httpfilter.ClientInterceptorBuilder = provider{}
+
+func (provider) Update(cfg httpfilter.FilterConfig) error {
+	// TODO(easwars): Add a new type `filter` when we remove the `cfg` parameter
+	// from BuildClientInterceptor and BuildServerInterceptor, and move this
+	// Update method to that type.  For now, since the router filter does not
+	// have any configuration, we do not need to do anything here.
+	//
+	// Also, when we do that, move the type assertion for the config into this
+	// method.
+	return nil
+}
+
+func (provider) BuildClientInterceptor(cfg, override httpfilter.FilterConfig) (iresolver.ClientInterceptor, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("fault: nil config provided")
 	}

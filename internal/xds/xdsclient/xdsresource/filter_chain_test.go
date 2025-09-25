@@ -2750,7 +2750,7 @@ type filterCfg struct {
 }
 
 type filterBuilder struct {
-	httpfilter.Filter
+	httpfilter.FilterProvider
 }
 
 var _ httpfilter.ServerInterceptorBuilder = &filterBuilder{}

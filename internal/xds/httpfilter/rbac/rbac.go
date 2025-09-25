@@ -36,10 +36,10 @@ import (
 )
 
 func init() {
-	httpfilter.Register(builder{})
+	httpfilter.Register(provider{})
 }
 
-type builder struct {
+type provider struct {
 }
 
 type config struct {
@@ -47,7 +47,7 @@ type config struct {
 	chainEngine *rbac.ChainEngine
 }
 
-func (builder) TypeURLs() []string {
+func (provider) TypeURLs() []string {
 	return []string{
 		"type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC",
 		"type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBACPerRoute",
@@ -126,7 +126,7 @@ func parseConfig(rbacCfg *rpb.RBAC) (httpfilter.FilterConfig, error) {
 	return config{chainEngine: ce}, nil
 }
 
-func (builder) ParseFilterConfig(cfg proto.Message) (httpfilter.FilterConfig, error) {
+func (provider) ParseFilterConfig(cfg proto.Message) (httpfilter.FilterConfig, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("rbac: nil configuration message provided")
 	}
@@ -141,7 +141,7 @@ func (builder) ParseFilterConfig(cfg proto.Message) (httpfilter.FilterConfig, er
 	return parseConfig(msg)
 }
 
-func (builder) ParseFilterConfigOverride(override proto.Message) (httpfilter.FilterConfig, error) {
+func (provider) ParseFilterConfigOverride(override proto.Message) (httpfilter.FilterConfig, error) {
 	if override == nil {
 		return nil, fmt.Errorf("rbac: nil configuration message provided")
 	}
@@ -156,15 +156,31 @@ func (builder) ParseFilterConfigOverride(override proto.Message) (httpfilter.Fil
 	return parseConfig(msg.Rbac)
 }
 
-func (builder) IsTerminal() bool {
+func (provider) IsTerminal() bool {
 	return false
 }
 
-var _ httpfilter.ServerInterceptorBuilder = builder{}
+// Build creates a new instance of the filter.
+func (p provider) Build() (httpfilter.Filter, error) {
+	return p, nil
+}
+
+var _ httpfilter.ServerInterceptorBuilder = provider{}
+
+func (provider) Update(cfg httpfilter.FilterConfig) error {
+	// TODO(easwars): Add a new type `filter` when we remove the `cfg` parameter
+	// from BuildClientInterceptor and BuildServerInterceptor, and move this
+	// Update method to that type.  For now, since the router filter does not
+	// have any configuration, we do not need to do anything here.
+	//
+	// Also, when we do that, move the type assertion for the config into this
+	// method.
+	return nil
+}
 
 // BuildServerInterceptor is an optional interface builder implements in order
 // to signify it works server side.
-func (builder) BuildServerInterceptor(cfg httpfilter.FilterConfig, override httpfilter.FilterConfig) (resolver.ServerInterceptor, error) {
+func (provider) BuildServerInterceptor(cfg httpfilter.FilterConfig, override httpfilter.FilterConfig) (resolver.ServerInterceptor, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("rbac: nil config provided")
 	}

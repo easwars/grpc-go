@@ -31,13 +31,12 @@ type FilterConfig interface {
 	isFilterConfig()
 }
 
-// Filter defines the parsing functionality of an HTTP filter.  A Filter may
-// optionally implement either ClientInterceptorBuilder or
-// ServerInterceptorBuilder or both, indicating it is capable of working on the
-// client side or server side or both, respectively.
-type Filter interface {
-	// TypeURLs are the proto message types supported by this filter.  A filter
-	// will be registered by each of its supported message types.
+// A FilterProvider is responsible for parsing a HTTP filter's configuration
+// proto messages and creating new filter instances. Every filter must implement
+// and register this interface.
+type FilterProvider interface {
+	// TypeURLs are the proto message types supported by this provider.
+	// A provider will be registered by each of its supported message types.
 	TypeURLs() []string
 	// ParseFilterConfig parses the provided configuration proto.Message from
 	// the LDS configuration of this filter.  This may be an anypb.Any, a
@@ -54,6 +53,18 @@ type Filter interface {
 	// IsTerminal returns whether this Filter is terminal or not (i.e. it must
 	// be last filter in the filter chain).
 	IsTerminal() bool
+	// Build creates a new instance of the filter.
+	Build() (Filter, error)
+}
+
+// A Filter is responsible for creating client or server interceptors or both
+// based on whether they implement the ClientInterceptorBuilder or
+// ServerInterceptorBuilder or both. It may also optionally maintain state that
+// is shared across all interceptors created from it.
+type Filter interface {
+	// Update is called when the filter's configuration changes. The filter
+	// should update any internal state to reflect the new configuration.
+	Update(FilterConfig) error
 }
 
 // ClientInterceptorBuilder constructs a Client Interceptor.  If this type is
@@ -79,17 +90,17 @@ type ServerInterceptorBuilder interface {
 }
 
 var (
-	// m is a map from scheme to filter.
-	m = make(map[string]Filter)
+	// m is a map from scheme to filter provider.
+	m = make(map[string]FilterProvider)
 )
 
-// Register registers the HTTP filter Builder to the filter map. b.TypeURLs()
+// Register registers the HTTP filter provider to the filter map. b.TypeURLs()
 // will be used as the types for this filter.
 //
 // NOTE: this function must only be called during initialization time (i.e. in
 // an init() function), and is not thread-safe. If multiple filters are
 // registered with the same type URL, the one registered last will take effect.
-func Register(b Filter) {
+func Register(b FilterProvider) {
 	for _, u := range b.TypeURLs() {
 		m[u] = b
 	}
@@ -100,9 +111,9 @@ func UnregisterForTesting(typeURL string) {
 	delete(m, typeURL)
 }
 
-// Get returns the HTTPFilter registered with typeURL.
+// Get returns the provider registered with typeURL.
 //
-// If no filter is register with typeURL, nil will be returned.
-func Get(typeURL string) Filter {
+// If no provider is registered with typeURL, nil will be returned.
+func Get(typeURL string) FilterProvider {
 	return m[typeURL]
 }

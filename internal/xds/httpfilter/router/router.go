@@ -34,21 +34,21 @@ import (
 const TypeURL = "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router"
 
 func init() {
-	httpfilter.Register(builder{})
+	httpfilter.Register(provider{})
 }
 
 // IsRouterFilter returns true iff a HTTP filter is a Router filter.
-func IsRouterFilter(b httpfilter.Filter) bool {
-	_, ok := b.(builder)
+func IsRouterFilter(b httpfilter.FilterProvider) bool {
+	_, ok := b.(provider)
 	return ok
 }
 
-type builder struct {
+type provider struct {
 }
 
-func (builder) TypeURLs() []string { return []string{TypeURL} }
+func (provider) TypeURLs() []string { return []string{TypeURL} }
 
-func (builder) ParseFilterConfig(cfg proto.Message) (httpfilter.FilterConfig, error) {
+func (provider) ParseFilterConfig(cfg proto.Message) (httpfilter.FilterConfig, error) {
 	// The gRPC router filter does not currently use any fields from the
 	// config.  Verify type only.
 	if cfg == nil {
@@ -65,23 +65,39 @@ func (builder) ParseFilterConfig(cfg proto.Message) (httpfilter.FilterConfig, er
 	return config{}, nil
 }
 
-func (builder) ParseFilterConfigOverride(override proto.Message) (httpfilter.FilterConfig, error) {
+func (provider) ParseFilterConfigOverride(override proto.Message) (httpfilter.FilterConfig, error) {
 	if override != nil {
 		return nil, fmt.Errorf("router: unexpected config override specified: %v", override)
 	}
 	return config{}, nil
 }
 
-func (builder) IsTerminal() bool {
+func (provider) IsTerminal() bool {
 	return true
 }
 
+// Build creates a new instance of the filter.
+func (p provider) Build() (httpfilter.Filter, error) {
+	return p, nil
+}
+
 var (
-	_ httpfilter.ClientInterceptorBuilder = builder{}
-	_ httpfilter.ServerInterceptorBuilder = builder{}
+	_ httpfilter.ClientInterceptorBuilder = provider{}
+	_ httpfilter.ServerInterceptorBuilder = provider{}
 )
 
-func (builder) BuildClientInterceptor(cfg, override httpfilter.FilterConfig) (iresolver.ClientInterceptor, error) {
+func (provider) Update(cfg httpfilter.FilterConfig) error {
+	// TODO(easwars): Add a new type `filter` when we remove the `cfg` parameter
+	// from BuildClientInterceptor and BuildServerInterceptor, and move this
+	// Update method to that type.  For now, since the router filter does not
+	// have any configuration, we do not need to do anything here.
+	//
+	// Also, when we do that, move the type assertion for the config into this
+	// method.
+	return nil
+}
+
+func (provider) BuildClientInterceptor(cfg, override httpfilter.FilterConfig) (iresolver.ClientInterceptor, error) {
 	if _, ok := cfg.(config); !ok {
 		return nil, fmt.Errorf("router: incorrect config type provided (%T): %v", cfg, cfg)
 	}
@@ -94,7 +110,7 @@ func (builder) BuildClientInterceptor(cfg, override httpfilter.FilterConfig) (ir
 	return nil, nil
 }
 
-func (builder) BuildServerInterceptor(cfg, override httpfilter.FilterConfig) (iresolver.ServerInterceptor, error) {
+func (provider) BuildServerInterceptor(cfg, override httpfilter.FilterConfig) (iresolver.ServerInterceptor, error) {
 	if _, ok := cfg.(config); !ok {
 		return nil, fmt.Errorf("router: incorrect config type provided (%T): %v", cfg, cfg)
 	}

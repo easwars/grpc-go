@@ -1747,6 +1747,21 @@ func (httpFilter) IsTerminal() bool {
 	return false
 }
 
+func (e httpFilter) Build() (httpfilter.Filter, error) {
+	return e, nil
+}
+
+func (e httpFilter) Update(cfg httpfilter.FilterConfig) error {
+	// TODO(easwars): Add a new type `filter` when we remove the `cfg` parameter
+	// from BuildClientInterceptor and BuildServerInterceptor, and move this
+	// Update method to that type.  For now, since the router filter does not
+	// have any configuration, we do not need to do anything here.
+	//
+	// Also, when we do that, move the type assertion for the config into this
+	// method.
+	return nil
+}
+
 // errHTTPFilter returns errors no matter what is passed to ParseFilterConfig.
 type errHTTPFilter struct {
 	httpfilter.ClientInterceptorBuilder
@@ -1764,6 +1779,21 @@ func (errHTTPFilter) ParseFilterConfigOverride(proto.Message) (httpfilter.Filter
 
 func (errHTTPFilter) IsTerminal() bool {
 	return false
+}
+
+func (c errHTTPFilter) Build() (httpfilter.Filter, error) {
+	return c, nil
+}
+
+func (c errHTTPFilter) Update(cfg httpfilter.FilterConfig) error {
+	// TODO(easwars): Add a new type `filter` when we remove the `cfg` parameter
+	// from BuildClientInterceptor and BuildServerInterceptor, and move this
+	// Update method to that type.  For now, since the router filter does not
+	// have any configuration, we do not need to do anything here.
+	//
+	// Also, when we do that, move the type assertion for the config into this
+	// method.
+	return nil
 }
 
 func init() {
@@ -1792,6 +1822,21 @@ func (serverOnlyHTTPFilter) IsTerminal() bool {
 	return false
 }
 
+func (s serverOnlyHTTPFilter) Build() (httpfilter.Filter, error) {
+	return s, nil
+}
+
+func (serverOnlyHTTPFilter) Update(cfg httpfilter.FilterConfig) error {
+	// TODO(easwars): Add a new type `filter` when we remove the `cfg` parameter
+	// from BuildClientInterceptor and BuildServerInterceptor, and move this
+	// Update method to that type.  For now, since the router filter does not
+	// have any configuration, we do not need to do anything here.
+	//
+	// Also, when we do that, move the type assertion for the config into this
+	// method.
+	return nil
+}
+
 // clientOnlyHTTPFilter does not implement ServerInterceptorBuilder
 type clientOnlyHTTPFilter struct {
 	httpfilter.ClientInterceptorBuilder
@@ -1809,6 +1854,21 @@ func (clientOnlyHTTPFilter) ParseFilterConfigOverride(override proto.Message) (h
 
 func (clientOnlyHTTPFilter) IsTerminal() bool {
 	return false
+}
+
+func (c clientOnlyHTTPFilter) Build() (httpfilter.Filter, error) {
+	return c, nil
+}
+
+func (clientOnlyHTTPFilter) Update(cfg httpfilter.FilterConfig) error {
+	// TODO(easwars): Add a new type `filter` when we remove the `cfg` parameter
+	// from BuildClientInterceptor and BuildServerInterceptor, and move this
+	// Update method to that type.  For now, since the router filter does not
+	// have any configuration, we do not need to do anything here.
+	//
+	// Also, when we do that, move the type assertion for the config into this
+	// method.
+	return nil
 }
 
 var customFilterConfig = &anypb.Any{
