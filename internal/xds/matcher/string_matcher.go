@@ -72,51 +72,103 @@ func (sm StringMatcher) Match(input string) bool {
 // Returns a non-nil error if matcherProto is invalid.
 func StringMatcherFromProto(matcherProto *v3matcherpb.StringMatcher) (StringMatcher, error) {
 	if matcherProto == nil {
-		return StringMatcher{}, errors.New("input StringMatcher proto is nil")
+		return StringMatcher{}, fmt.Errorf("input StringMatcher proto is nil")
 	}
 
-	matcher := StringMatcher{ignoreCase: matcherProto.GetIgnoreCase()}
-	switch mt := matcherProto.GetMatchPattern().(type) {
-	case *v3matcherpb.StringMatcher_Exact:
-		matcher.exactMatch = &mt.Exact
-		if matcher.ignoreCase {
-			*matcher.exactMatch = strings.ToLower(*matcher.exactMatch)
-		}
-	case *v3matcherpb.StringMatcher_Prefix:
-		if matcherProto.GetPrefix() == "" {
+	var exact, prefix, suffix, contains string
+	if matcherProto.GetExact() != "" {
+		exact = matcherProto.GetExact()
+	}
+	if matcherProto.GetPrefix() != "" {
+		prefix = matcherProto.GetPrefix()
+	}
+	if matcherProto.GetSuffix() != "" {
+		suffix = matcherProto.GetSuffix()
+	}
+	if matcherProto.GetContains() != "" {
+		contains = matcherProto.GetContains()
+	}
+
+	var regex string
+	if matcherProto.GetSafeRegex() != nil {
+		regex = matcherProto.GetSafeRegex().GetRegex()
+	}
+	return NewStringMatcher(StringMatcherOptions{
+		ExactMatch:    &exact,
+		PrefixMatch:   &prefix,
+		SuffixMatch:   &suffix,
+		ContainsMatch: &contains,
+		RegexMatch:    &regex,
+		IgnoreCase:    matcherProto.GetIgnoreCase(),
+	})
+}
+
+// StringMatcherOptions contains arguments for creating a StringMatcher.
+type StringMatcherOptions struct {
+	// One and only one of the following fields is expected to be set, as these
+	// fields correspond to a `oneof` in the xDS proto.
+	ExactMatch    *string // The input string must match exactly the string specified here. Could be empty.
+	PrefixMatch   *string // The input string must have the prefix specified here. Cannot be empty.
+	SuffixMatch   *string // The input string must have the suffix specified here. Cannot be empty.
+	ContainsMatch *string // The input string must contain the string specified here. Cannot be empty.
+	RegexMatch    *string // The input string must match the regex specified here. If non-nil, the regex must compile successfully.
+
+	// IgnoreCase indicates if the exact/prefix/suffix/contains matching should
+	// be case insensitive. This has no effect on the regex match.
+	IgnoreCase bool
+}
+
+// NewStringMatcher is a helper function to create a StringMatcher based on
+// the given options.
+//
+// Returns a non-nil error if the given options are invalid.
+func NewStringMatcher(opts StringMatcherOptions) (StringMatcher, error) {
+	numSet := 0
+	if opts.ExactMatch != nil {
+		numSet++
+	}
+	if opts.PrefixMatch != nil {
+		if *opts.PrefixMatch == "" {
 			return StringMatcher{}, errors.New("empty prefix is not allowed in StringMatcher")
 		}
-		matcher.prefixMatch = &mt.Prefix
-		if matcher.ignoreCase {
-			*matcher.prefixMatch = strings.ToLower(*matcher.prefixMatch)
-		}
-	case *v3matcherpb.StringMatcher_Suffix:
-		if matcherProto.GetSuffix() == "" {
+		numSet++
+	}
+	if opts.SuffixMatch != nil {
+		if *opts.SuffixMatch == "" {
 			return StringMatcher{}, errors.New("empty suffix is not allowed in StringMatcher")
 		}
-		matcher.suffixMatch = &mt.Suffix
-		if matcher.ignoreCase {
-			*matcher.suffixMatch = strings.ToLower(*matcher.suffixMatch)
-		}
-	case *v3matcherpb.StringMatcher_SafeRegex:
-		regex := matcherProto.GetSafeRegex().GetRegex()
-		re, err := regexp.Compile(regex)
-		if err != nil {
-			return StringMatcher{}, fmt.Errorf("safe_regex matcher %q is invalid", regex)
-		}
-		matcher.regexMatch = re
-	case *v3matcherpb.StringMatcher_Contains:
-		if matcherProto.GetContains() == "" {
+		numSet++
+	}
+	if opts.ContainsMatch != nil {
+		if *opts.ContainsMatch == "" {
 			return StringMatcher{}, errors.New("empty contains is not allowed in StringMatcher")
 		}
-		matcher.containsMatch = &mt.Contains
-		if matcher.ignoreCase {
-			*matcher.containsMatch = strings.ToLower(*matcher.containsMatch)
-		}
-	default:
-		return StringMatcher{}, fmt.Errorf("unrecognized string matcher: %+v", matcherProto)
+		numSet++
 	}
-	return matcher, nil
+	var re *regexp.Regexp
+	if opts.RegexMatch != nil {
+		var err error
+		re, err = regexp.Compile(*opts.RegexMatch)
+		if err != nil {
+			return StringMatcher{}, fmt.Errorf("safe_regex matcher %q is invalid", *opts.RegexMatch)
+		}
+		numSet++
+	}
+	if numSet == 0 {
+		return StringMatcher{}, errors.New("no match criteria specified for StringMatcher")
+	}
+	if numSet > 1 {
+		return StringMatcher{}, errors.New("multiple match criteria specified for StringMatcher; only one is allowed")
+	}
+
+	return StringMatcher{
+		exactMatch:    opts.ExactMatch,
+		prefixMatch:   opts.PrefixMatch,
+		suffixMatch:   opts.SuffixMatch,
+		containsMatch: opts.ContainsMatch,
+		regexMatch:    re,
+		ignoreCase:    opts.IgnoreCase,
+	}, nil
 }
 
 // StringMatcherForTesting is a helper function to create a StringMatcher based
