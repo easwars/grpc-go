@@ -19,6 +19,7 @@
 package xdsclient
 
 import (
+	"container/list"
 	"context"
 	"fmt"
 	"sync"
@@ -28,7 +29,6 @@ import (
 	igrpclog "google.golang.org/grpc/internal/grpclog"
 	"google.golang.org/grpc/internal/xds/clients"
 	"google.golang.org/grpc/internal/xds/clients/internal/backoff"
-	"google.golang.org/grpc/internal/xds/clients/internal/buffer"
 	"google.golang.org/grpc/internal/xds/clients/internal/pretty"
 	"google.golang.org/grpc/internal/xds/clients/xdsclient/internal/xdsresource"
 
@@ -104,7 +104,6 @@ type adsStreamImpl struct {
 	// The following fields are initialized in the constructor and are not
 	// written to afterwards, and hence can be accessed without a mutex.
 	streamCh     chan clients.Stream // New ADS streams are pushed here.
-	requestCh    *buffer.Unbounded   // Subscriptions and unsubscriptions are pushed here.
 	runnerDoneCh chan struct{}       // Notify completion of runner goroutine.
 	cancel       context.CancelFunc  // To cancel the context passed to the runner goroutine.
 	fc           *adsFlowControl     // Flow control for ADS stream.
@@ -113,6 +112,10 @@ type adsStreamImpl struct {
 	mu                sync.Mutex
 	resourceTypeState map[ResourceType]*resourceTypeState // Map of resource types to their state.
 	firstRequest      bool                                // False after the first request is sent out.
+	queuedReqs        *list.List                          // Queued requests waiting to be sent.
+	queuedReqsExist   *sync.Cond                          // Condition variable for waiting on queued requests.
+	streamDone        bool                                // True if the adsStreamImpl is stopped.
+	recvDone          bool                                // True if receiving on the ADS stream is done.
 }
 
 // adsStreamOpts contains the options for creating a new ADS Stream.
@@ -137,11 +140,12 @@ func newADSStreamImpl(opts adsStreamOpts) *adsStreamImpl {
 		watchExpiryTimeout: opts.watchExpiryTimeout,
 
 		streamCh:          make(chan clients.Stream, 1),
-		requestCh:         buffer.NewUnbounded(),
 		runnerDoneCh:      make(chan struct{}),
 		fc:                newADSFlowControl(),
 		resourceTypeState: make(map[ResourceType]*resourceTypeState),
+		queuedReqs:        list.New(),
 	}
+	s.queuedReqsExist = sync.NewCond(&s.mu)
 
 	l := grpclog.Component("xds")
 	s.logger = igrpclog.NewPrefixLogger(l, opts.logPrefix+fmt.Sprintf("[ads-stream %p] ", s))
@@ -156,7 +160,15 @@ func newADSStreamImpl(opts adsStreamOpts) *adsStreamImpl {
 func (s *adsStreamImpl) Stop() {
 	s.cancel()
 	s.fc.stop()
-	s.requestCh.Close()
+
+	// Unblock the sender goroutine which might be blocked waiting for queued
+	// requests to be sent out. It is allowed but not required to hold the lock
+	// when signalling.
+	s.mu.Lock()
+	s.streamDone = true
+	s.queuedReqsExist.Signal()
+	s.mu.Unlock()
+
 	<-s.runnerDoneCh
 	s.logger.Infof("Shutdown ADS stream")
 }
@@ -185,8 +197,13 @@ func (s *adsStreamImpl) subscribe(typ ResourceType, name string) {
 	// be started when a request for this resource is actually sent out.
 	state.subscribedResources[name] = &xdsresource.ResourceWatchState{State: xdsresource.ResourceWatchStateStarted}
 
-	// Send a request for the resource type with updated subscriptions.
-	s.requestCh.Put(request{typ: typ, resourceNames: resourceNames(state.subscribedResources)})
+	// Queue a request for the resource type with updated subscriptions.
+	resourceNames := resourceNames(state.subscribedResources)
+	if s.logger.V(2) {
+		s.logger.Infof("Queueing a request for resources %q of type %q", resourceNames, typ.TypeName)
+	}
+	s.queuedReqs.PushBack(request{typ: typ, resourceNames: resourceNames})
+	s.queuedReqsExist.Signal()
 }
 
 // unsubscribe cancels the subscription to the given resource. It is a no-op if
@@ -215,8 +232,13 @@ func (s *adsStreamImpl) unsubscribe(typ ResourceType, name string) {
 	}
 	delete(state.subscribedResources, name)
 
-	// Send a request for the resource type with updated subscriptions.
-	s.requestCh.Put(request{typ: typ, resourceNames: resourceNames(state.subscribedResources)})
+	// Queue a request for the resource type with updated subscriptions.
+	resourceNames := resourceNames(state.subscribedResources)
+	if s.logger.V(2) {
+		s.logger.Infof("Queueing a request for resources %q of type %q", resourceNames, typ.TypeName)
+	}
+	s.queuedReqs.PushBack(request{typ: typ, resourceNames: resourceNames})
+	s.queuedReqsExist.Signal()
 }
 
 // runner is a long-running goroutine that handles the lifecycle of the ADS
@@ -226,8 +248,6 @@ func (s *adsStreamImpl) unsubscribe(typ ResourceType, name string) {
 // creating a new stream.
 func (s *adsStreamImpl) runner(ctx context.Context) {
 	defer close(s.runnerDoneCh)
-
-	go s.send(ctx)
 
 	runStreamWithBackoff := func() error {
 		stream, err := s.transport.NewStream(ctx, "/envoy.service.discovery.v3.AggregatedDiscoveryService/StreamAggregatedResources")
@@ -242,93 +262,99 @@ func (s *adsStreamImpl) runner(ctx context.Context) {
 
 		s.mu.Lock()
 		s.firstRequest = true
+		s.recvDone = false
+		if err := s.sendExistingLocked(stream); err != nil {
+			s.logger.Warningf("Failed to send existing resources on newly created stream: %v", err)
+			s.mu.Unlock()
+			return nil
+		}
 		s.mu.Unlock()
 
-		// Ensure that the most recently created stream is pushed on the
-		// channel for the `send` goroutine to consume.
-		select {
-		case <-s.streamCh:
-		default:
-		}
-		s.streamCh <- stream
+		// Spawn the sending goroutine that runs until the context is done, or
+		// writing to the stream fails. When the latter happens, the next
+		// iteration of the loop in the runner goroutine will spawn another
+		// sending goroutine.
+		sendDoneCh := make(chan struct{})
+		recvDoneCh := make(chan struct{})
+		go func() {
+			defer close(sendDoneCh)
+
+			for ctx.Err() == nil {
+				// Spawn a goroutine to wait for queued requests to be available
+				// for sending. This is required to exit the sending goroutine
+				// blocked on the condition variable when the receiving is done.
+				waitCh := make(chan struct{})
+				go func() {
+					s.mu.Lock()
+					defer s.mu.Unlock()
+
+					// Wait on the condition variable only if there are no
+					// queued requests. A call to `Signal` will be a no-op if
+					// there are no blocked goroutines at that point in time.
+					// There could be newly queued requests that come in after
+					// we release the lock at the end of the loop, that result
+					// in a call to `Signal` before we get here.
+					if s.queuedReqs.Len() == 0 && !s.recvDone && !s.streamDone {
+						s.queuedReqsExist.Wait()
+					}
+					close(waitCh)
+				}()
+
+				select {
+				case <-waitCh:
+					// Queued requests are now available, continue with sending.
+				case <-recvDoneCh:
+					// Receiving is done. Ensure that the goroutine waiting on
+					// the condition variable exits.
+					s.mu.Lock()
+					s.recvDone = true
+					s.queuedReqsExist.Signal()
+					s.mu.Unlock()
+					<-waitCh
+					return
+				}
+
+				// Iterate and consume the list of queued requests.
+				s.mu.Lock()
+				for s.queuedReqs.Len() > 0 {
+					elem := s.queuedReqs.Front()
+					req := elem.Value.(request)
+					state := s.resourceTypeState[req.typ]
+					if err := s.sendMessageLocked(stream, req.resourceNames, req.typ.TypeURL, state.version, state.nonce, nil); err != nil {
+						s.logger.Warningf("Failed to send queued request for resources %q of type %q: %v", req.resourceNames, req.typ.TypeName, err)
+						s.mu.Unlock()
+						return
+					}
+					s.queuedReqs.Remove(elem)
+					s.startWatchTimersLocked(req.typ, req.resourceNames)
+				}
+				s.mu.Unlock()
+			}
+		}()
 
 		// Backoff state is reset upon successful receipt of at least one
 		// message from the server.
+		err = nil
 		if s.recv(stream) {
-			return backoff.ErrResetBackoff
+			err = backoff.ErrResetBackoff
 		}
-		return nil
+		close(recvDoneCh)
+
+		<-sendDoneCh
+		return err
 	}
 	backoff.RunF(ctx, runStreamWithBackoff, s.backoff)
 }
 
-// send is a long running goroutine that handles sending discovery requests for
-// two scenarios:
-// - a new subscription or unsubscription request is received
-// - a new stream is created after the previous one failed
-func (s *adsStreamImpl) send(ctx context.Context) {
-	// Stores the most recent stream instance received on streamCh.
-	var stream clients.Stream
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case stream = <-s.streamCh:
-			if err := s.sendExisting(stream); err != nil {
-				// Send failed, clear the current stream. Attempt to resend will
-				// only be made after a new stream is created.
-				stream = nil
-				continue
-			}
-		case r, ok := <-s.requestCh.Get():
-			if !ok {
-				return
-			}
-			s.requestCh.Load()
-
-			req := r.(request)
-			if err := s.sendNew(stream, req.typ, req.resourceNames); err != nil {
-				stream = nil
-				continue
-			}
-		}
-	}
-}
-
-// sendNew attempts to send a discovery request based on a new subscription or
-// unsubscription. This method also starts the watch expiry timer for resources
-// that were sent in the request for the first time, i.e. their watch state is
-// `watchStateStarted`.
-func (s *adsStreamImpl) sendNew(stream clients.Stream, typ ResourceType, names []string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// If there's no stream yet, skip the request. This request will be resent
-	// when a new stream is created. If no stream is created, the watcher will
-	// timeout (same as server not sending response back).
-	if stream == nil {
-		return nil
-	}
-
-	state := s.resourceTypeState[typ]
-	if err := s.sendMessageLocked(stream, names, typ.TypeURL, state.version, state.nonce, nil); err != nil {
-		return err
-	}
-	s.startWatchTimersLocked(typ, names)
-	return nil
-}
-
-// sendExisting sends out discovery requests for existing resources when
-// recovering from a broken stream.
+// sendExistingLocked sends out discovery requests for existing resources when
+// recovering from a broken stream. The stream argument is guaranteed to be
+// non-nil.
 //
-// The stream argument is guaranteed to be non-nil.
-func (s *adsStreamImpl) sendExisting(stream clients.Stream) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+// Caller needs to hold c.mu.
+func (s *adsStreamImpl) sendExistingLocked(stream clients.Stream) error {
 	// Clear any queued requests. Previously subscribed to resources will be
 	// resent below.
-	s.requestCh.Reset()
+	s.queuedReqs.Init()
 
 	for typ, state := range s.resourceTypeState {
 		// Reset only the nonces map when the stream restarts.
