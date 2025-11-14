@@ -583,8 +583,11 @@ func (s) TestConnectivityStateSubscriber(t *testing.T) {
 // Test verifies that a channel starts off in IDLE and transitions to CONNECTING
 // when Connect() is called, and stays there when there are no resolver updates.
 func (s) TestStateTransitions_WithConnect_NoResolverUpdate(t *testing.T) {
+<<<<<<< HEAD
 	t.Skip("The channel remains in IDLE until the LB policy updates the state to CONNECTING. This is a bug and the channel should transition to CONNECTING as soon as Connect() is called. See issue #7686.")
 
+=======
+>>>>>>> f680daa26 (client: transition channel to CONNECTING when creating the name resolver)
 	backend := stubserver.StartTestService(t, nil)
 	defer backend.Stop()
 
@@ -618,8 +621,11 @@ func (s) TestStateTransitions_WithConnect_NoResolverUpdate(t *testing.T) {
 // Test verifies that a channel starts off in IDLE and transitions to CONNECTING
 // when Connect() is called, and stays there when there are no resolver updates.
 func (s) TestStateTransitions_WithRPC_NoResolverUpdate(t *testing.T) {
+<<<<<<< HEAD
 	t.Skip("The channel remains in IDLE until the LB policy updates the state to CONNECTING. This is a bug and the channel should transition to CONNECTING as soon as an RPC call is made. See issue #7686.")
 
+=======
+>>>>>>> f680daa26 (client: transition channel to CONNECTING when creating the name resolver)
 	backend := stubserver.StartTestService(t, nil)
 	defer backend.Stop()
 

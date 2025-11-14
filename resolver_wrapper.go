@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/internal/channelz"
 	"google.golang.org/grpc/internal/grpcsync"
 	"google.golang.org/grpc/internal/pretty"
@@ -79,6 +80,9 @@ func (ccr *ccResolverWrapper) start() error {
 			Authority:            ccr.cc.authority,
 			MetricsRecorder:      ccr.cc.metricsRecorderList,
 		}
+
+		ccr.cc.csMgr.updateState(connectivity.Connecting)
+
 		var err error
 		// The delegating resolver is used unless:
 		//   - A custom dialer is provided via WithContextDialer dialoption or
@@ -89,6 +93,10 @@ func (ccr *ccResolverWrapper) start() error {
 			ccr.resolver, err = ccr.cc.resolverBuilder.Build(ccr.cc.parsedTarget, ccr, opts)
 		} else {
 			ccr.resolver, err = delegatingresolver.New(ccr.cc.parsedTarget, ccr, opts, ccr.cc.resolverBuilder, ccr.cc.dopts.enableLocalDNSResolution)
+		}
+
+		if err != nil {
+			ccr.cc.csMgr.updateState(connectivity.TransientFailure)
 		}
 		errCh <- err
 	})
