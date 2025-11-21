@@ -75,7 +75,7 @@ func StringMatcherFromProto(matcherProto *v3matcherpb.StringMatcher) (StringMatc
 		return StringMatcher{}, fmt.Errorf("input StringMatcher proto is nil")
 	}
 
-	var exact, prefix, suffix, contains string
+	var exact, prefix, suffix, contains *string
 	if matcherProto.GetExact() != "" {
 		exact = matcherProto.GetExact()
 	}
@@ -87,6 +87,45 @@ func StringMatcherFromProto(matcherProto *v3matcherpb.StringMatcher) (StringMatc
 	}
 	if matcherProto.GetContains() != "" {
 		contains = matcherProto.GetContains()
+	}
+
+	switch mt := matcherProto.GetMatchPattern().(type) {
+	case *v3matcherpb.StringMatcher_Exact:
+		exact = &mt.Exact
+		if matcher.ignoreCase {
+			*matcher.exactMatch = strings.ToLower(*matcher.exactMatch)
+		}
+	case *v3matcherpb.StringMatcher_Prefix:
+		if matcherProto.GetPrefix() == "" {
+			return StringMatcher{}, errors.New("empty prefix is not allowed in StringMatcher")
+		}
+		matcher.prefixMatch = &mt.Prefix
+		if matcher.ignoreCase {
+			*matcher.prefixMatch = strings.ToLower(*matcher.prefixMatch)
+		}
+	case *v3matcherpb.StringMatcher_Suffix:
+		if matcherProto.GetSuffix() == "" {
+			return StringMatcher{}, errors.New("empty suffix is not allowed in StringMatcher")
+		}
+		matcher.suffixMatch = &mt.Suffix
+		if matcher.ignoreCase {
+			*matcher.suffixMatch = strings.ToLower(*matcher.suffixMatch)
+		}
+	case *v3matcherpb.StringMatcher_SafeRegex:
+		regex := matcherProto.GetSafeRegex().GetRegex()
+		re, err := regexp.Compile(regex)
+		if err != nil {
+			return StringMatcher{}, fmt.Errorf("safe_regex matcher %q is invalid", regex)
+		}
+		matcher.regexMatch = re
+	case *v3matcherpb.StringMatcher_Contains:
+		if matcherProto.GetContains() == "" {
+			return StringMatcher{}, errors.New("empty contains is not allowed in StringMatcher")
+		}
+		matcher.containsMatch = &mt.Contains
+		if matcher.ignoreCase {
+			*matcher.containsMatch = strings.ToLower(*matcher.containsMatch)
+		}
 	}
 
 	var regex string
