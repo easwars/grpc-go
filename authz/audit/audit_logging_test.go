@@ -108,6 +108,9 @@ func (s) TestAuditLogger(t *testing.T) {
 				"allow_rules": [
 					{
 						"name": "allow_UnaryCall",
+						"source": {
+							"principals": ["*", ""]
+						},
 						"request": {
 							"paths": [
 								"/grpc.testing.TestService/UnaryCall"
@@ -264,7 +267,10 @@ func (s) TestAuditLogger(t *testing.T) {
 				lastEvent:         &audit.Event{},
 			}
 			audit.RegisterLoggerBuilder(lb)
-			i, _ := authz.NewStatic(test.authzPolicy)
+			i, err := authz.NewStatic(test.authzPolicy)
+			if err != nil {
+				t.Fatalf("authz.NewStatic(%v) failed: %v", test.authzPolicy, err)
+			}
 
 			s := grpc.NewServer(grpc.Creds(serverCreds), grpc.ChainUnaryInterceptor(i.UnaryInterceptor), grpc.ChainStreamInterceptor(i.StreamInterceptor))
 			defer s.Stop()
