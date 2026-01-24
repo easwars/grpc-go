@@ -667,16 +667,6 @@ func (s) TestUnmarshalListener_ServerSide(t *testing.T) {
 				},
 			},
 		}
-		localSocketAddress = &v3corepb.Address{
-			Address: &v3corepb.Address_SocketAddress{
-				SocketAddress: &v3corepb.SocketAddress{
-					Address: "0.0.0.0",
-					PortSpecifier: &v3corepb.SocketAddress_PortValue{
-						PortValue: 9999,
-					},
-				},
-			},
-		}
 		listenerEmptyTransportSocket = testutils.MarshalAny(t, &v3listenerpb.Listener{
 			Name:    v3LDSTarget,
 			Address: localSocketAddress,
@@ -1359,17 +1349,19 @@ func (s) TestUnmarshalListener_ServerSide(t *testing.T) {
 				TCPListener: &InboundListenerConfig{
 					Address: "0.0.0.0",
 					Port:    "9999",
-					FilterChains: &FilterChainManager{
-						dstPrefixMap: map[string]*destPrefixEntry{
-							unspecifiedPrefixMapKey: {
-								srcTypeArr: [3]*sourcePrefixes{
+					FilterChains: FilterChainMap{
+						DstPrefixes: []*DestinationPrefixEntry{
+							/*dstPrefixMap*/
+							/*unspecified*/ {
+								SourceTypeArr: [3]*SourcePrefixes{
 									{
-										srcPrefixMap: map[string]*sourcePrefixEntry{
-											unspecifiedPrefixMapKey: {
-												srcPortMap: map[int]*FilterChain{
+										Entries: []*SourcePrefixEntry{
+											/*unspecified*/ {
+												PortMap: map[int]*FilterChainConfig{
 													0: {
-														InlineRouteConfig: inlineRouteConfig,
-														HTTPFilters:       makeRouterFilterList(t),
+														HTTPConnMgr: &HTTPConnectionManagerConfig{InlineRouteConfig: inlineRouteConfig,
+															HTTPFilters: makeRouterFilterList(t),
+														},
 													},
 												},
 											},
@@ -1444,17 +1436,19 @@ func (s) TestUnmarshalListener_ServerSide(t *testing.T) {
 				TCPListener: &InboundListenerConfig{
 					Address: "0.0.0.0",
 					Port:    "9999",
-					FilterChains: &FilterChainManager{
-						dstPrefixMap: map[string]*destPrefixEntry{
-							unspecifiedPrefixMapKey: {
-								srcTypeArr: [3]*sourcePrefixes{
+					FilterChains: FilterChainMap{
+						DstPrefixes: []*DestinationPrefixEntry{
+							/*dstPrefixMap*/
+							/*unspecified*/ {
+								SourceTypeArr: [3]*SourcePrefixes{
 									{
-										srcPrefixMap: map[string]*sourcePrefixEntry{
-											unspecifiedPrefixMapKey: {
-												srcPortMap: map[int]*FilterChain{
+										Entries: []*SourcePrefixEntry{
+											/*unspecified*/ {
+												PortMap: map[int]*FilterChainConfig{
 													0: {
-														InlineRouteConfig: inlineRouteConfig,
-														HTTPFilters:       makeRouterFilterList(t),
+														HTTPConnMgr: &HTTPConnectionManagerConfig{InlineRouteConfig: inlineRouteConfig,
+															HTTPFilters: makeRouterFilterList(t),
+														},
 													},
 												},
 											},
@@ -1557,21 +1551,23 @@ func (s) TestUnmarshalListener_ServerSide(t *testing.T) {
 				TCPListener: &InboundListenerConfig{
 					Address: "0.0.0.0",
 					Port:    "9999",
-					FilterChains: &FilterChainManager{
-						dstPrefixMap: map[string]*destPrefixEntry{
-							unspecifiedPrefixMapKey: {
-								srcTypeArr: [3]*sourcePrefixes{
+					FilterChains: FilterChainMap{
+						DstPrefixes: []*DestinationPrefixEntry{
+							/*dstPrefixMap*/
+							/*unspecified*/ {
+								SourceTypeArr: [3]*SourcePrefixes{
 									{
-										srcPrefixMap: map[string]*sourcePrefixEntry{
-											unspecifiedPrefixMapKey: {
-												srcPortMap: map[int]*FilterChain{
+										Entries: []*SourcePrefixEntry{
+											/*unspecified*/ {
+												PortMap: map[int]*FilterChainConfig{
 													0: {
 														SecurityCfg: &SecurityConfig{
 															IdentityInstanceName: "identityPluginInstance",
 															IdentityCertName:     "identityCertName",
 														},
-														InlineRouteConfig: inlineRouteConfig,
-														HTTPFilters:       makeRouterFilterList(t),
+														HTTPConnMgr: &HTTPConnectionManagerConfig{InlineRouteConfig: inlineRouteConfig,
+															HTTPFilters: makeRouterFilterList(t),
+														},
 													},
 												},
 											},
@@ -1580,11 +1576,13 @@ func (s) TestUnmarshalListener_ServerSide(t *testing.T) {
 								},
 							},
 						},
-						def: &FilterChain{
-							SecurityCfg: &SecurityConfig{
-								IdentityInstanceName: "defaultIdentityPluginInstance",
-								IdentityCertName:     "defaultIdentityCertName",
-							},
+					},
+					DefaultFilterChain: &FilterChainConfig{
+						SecurityCfg: &SecurityConfig{
+							IdentityInstanceName: "defaultIdentityPluginInstance",
+							IdentityCertName:     "defaultIdentityCertName",
+						},
+						HTTPConnMgr: &HTTPConnectionManagerConfig{
 							InlineRouteConfig: inlineRouteConfig,
 							HTTPFilters:       makeRouterFilterList(t),
 						},
@@ -1601,21 +1599,23 @@ func (s) TestUnmarshalListener_ServerSide(t *testing.T) {
 				TCPListener: &InboundListenerConfig{
 					Address: "0.0.0.0",
 					Port:    "9999",
-					FilterChains: &FilterChainManager{
-						dstPrefixMap: map[string]*destPrefixEntry{
-							unspecifiedPrefixMapKey: {
-								srcTypeArr: [3]*sourcePrefixes{
+					FilterChains: FilterChainMap{
+						DstPrefixes: []*DestinationPrefixEntry{
+							/*dstPrefixMap*/
+							/*unspecified*/ {
+								SourceTypeArr: [3]*SourcePrefixes{
 									{
-										srcPrefixMap: map[string]*sourcePrefixEntry{
-											unspecifiedPrefixMapKey: {
-												srcPortMap: map[int]*FilterChain{
+										Entries: []*SourcePrefixEntry{
+											/*unspecified*/ {
+												PortMap: map[int]*FilterChainConfig{
 													0: {
 														SecurityCfg: &SecurityConfig{
 															IdentityInstanceName: "identityPluginInstance",
 															IdentityCertName:     "identityCertName",
 														},
-														InlineRouteConfig: inlineRouteConfig,
-														HTTPFilters:       makeRouterFilterList(t),
+														HTTPConnMgr: &HTTPConnectionManagerConfig{InlineRouteConfig: inlineRouteConfig,
+															HTTPFilters: makeRouterFilterList(t),
+														},
 													},
 												},
 											},
@@ -1624,11 +1624,13 @@ func (s) TestUnmarshalListener_ServerSide(t *testing.T) {
 								},
 							},
 						},
-						def: &FilterChain{
-							SecurityCfg: &SecurityConfig{
-								IdentityInstanceName: "defaultIdentityPluginInstance",
-								IdentityCertName:     "defaultIdentityCertName",
-							},
+					},
+					DefaultFilterChain: &FilterChainConfig{
+						SecurityCfg: &SecurityConfig{
+							IdentityInstanceName: "defaultIdentityPluginInstance",
+							IdentityCertName:     "defaultIdentityCertName",
+						},
+						HTTPConnMgr: &HTTPConnectionManagerConfig{
 							InlineRouteConfig: inlineRouteConfig,
 							HTTPFilters:       makeRouterFilterList(t),
 						},
@@ -1645,14 +1647,15 @@ func (s) TestUnmarshalListener_ServerSide(t *testing.T) {
 				TCPListener: &InboundListenerConfig{
 					Address: "0.0.0.0",
 					Port:    "9999",
-					FilterChains: &FilterChainManager{
-						dstPrefixMap: map[string]*destPrefixEntry{
-							unspecifiedPrefixMapKey: {
-								srcTypeArr: [3]*sourcePrefixes{
+					FilterChains: FilterChainMap{
+						DstPrefixes: []*DestinationPrefixEntry{
+							/*dstPrefixMap*/
+							/*unspecified*/ {
+								SourceTypeArr: [3]*SourcePrefixes{
 									{
-										srcPrefixMap: map[string]*sourcePrefixEntry{
-											unspecifiedPrefixMapKey: {
-												srcPortMap: map[int]*FilterChain{
+										Entries: []*SourcePrefixEntry{
+											/*unspecified*/ {
+												PortMap: map[int]*FilterChainConfig{
 													0: {
 														SecurityCfg: &SecurityConfig{
 															RootInstanceName:     "rootPluginInstance",
@@ -1661,8 +1664,9 @@ func (s) TestUnmarshalListener_ServerSide(t *testing.T) {
 															IdentityCertName:     "identityCertName",
 															RequireClientCert:    true,
 														},
-														InlineRouteConfig: inlineRouteConfig,
-														HTTPFilters:       makeRouterFilterList(t),
+														HTTPConnMgr: &HTTPConnectionManagerConfig{InlineRouteConfig: inlineRouteConfig,
+															HTTPFilters: makeRouterFilterList(t),
+														},
 													},
 												},
 											},
@@ -1671,14 +1675,16 @@ func (s) TestUnmarshalListener_ServerSide(t *testing.T) {
 								},
 							},
 						},
-						def: &FilterChain{
-							SecurityCfg: &SecurityConfig{
-								RootInstanceName:     "defaultRootPluginInstance",
-								RootCertName:         "defaultRootCertName",
-								IdentityInstanceName: "defaultIdentityPluginInstance",
-								IdentityCertName:     "defaultIdentityCertName",
-								RequireClientCert:    true,
-							},
+					},
+					DefaultFilterChain: &FilterChainConfig{
+						SecurityCfg: &SecurityConfig{
+							RootInstanceName:     "defaultRootPluginInstance",
+							RootCertName:         "defaultRootCertName",
+							IdentityInstanceName: "defaultIdentityPluginInstance",
+							IdentityCertName:     "defaultIdentityCertName",
+							RequireClientCert:    true,
+						},
+						HTTPConnMgr: &HTTPConnectionManagerConfig{
 							InlineRouteConfig: inlineRouteConfig,
 							HTTPFilters:       makeRouterFilterList(t),
 						},
@@ -1695,14 +1701,15 @@ func (s) TestUnmarshalListener_ServerSide(t *testing.T) {
 				TCPListener: &InboundListenerConfig{
 					Address: "0.0.0.0",
 					Port:    "9999",
-					FilterChains: &FilterChainManager{
-						dstPrefixMap: map[string]*destPrefixEntry{
-							unspecifiedPrefixMapKey: {
-								srcTypeArr: [3]*sourcePrefixes{
+					FilterChains: FilterChainMap{
+						DstPrefixes: []*DestinationPrefixEntry{
+							/*dstPrefixMap*/
+							/*unspecified*/ {
+								SourceTypeArr: [3]*SourcePrefixes{
 									{
-										srcPrefixMap: map[string]*sourcePrefixEntry{
-											unspecifiedPrefixMapKey: {
-												srcPortMap: map[int]*FilterChain{
+										Entries: []*SourcePrefixEntry{
+											/*unspecified*/ {
+												PortMap: map[int]*FilterChainConfig{
 													0: {
 														SecurityCfg: &SecurityConfig{
 															RootInstanceName:     "rootPluginInstance",
@@ -1711,8 +1718,9 @@ func (s) TestUnmarshalListener_ServerSide(t *testing.T) {
 															IdentityCertName:     "identityCertName",
 															RequireClientCert:    true,
 														},
-														InlineRouteConfig: inlineRouteConfig,
-														HTTPFilters:       makeRouterFilterList(t),
+														HTTPConnMgr: &HTTPConnectionManagerConfig{InlineRouteConfig: inlineRouteConfig,
+															HTTPFilters: makeRouterFilterList(t),
+														},
 													},
 												},
 											},
@@ -1721,14 +1729,16 @@ func (s) TestUnmarshalListener_ServerSide(t *testing.T) {
 								},
 							},
 						},
-						def: &FilterChain{
-							SecurityCfg: &SecurityConfig{
-								RootInstanceName:     "defaultRootPluginInstance",
-								RootCertName:         "defaultRootCertName",
-								IdentityInstanceName: "defaultIdentityPluginInstance",
-								IdentityCertName:     "defaultIdentityCertName",
-								RequireClientCert:    true,
-							},
+					},
+					DefaultFilterChain: &FilterChainConfig{
+						SecurityCfg: &SecurityConfig{
+							RootInstanceName:     "defaultRootPluginInstance",
+							RootCertName:         "defaultRootCertName",
+							IdentityInstanceName: "defaultIdentityPluginInstance",
+							IdentityCertName:     "defaultIdentityCertName",
+							RequireClientCert:    true,
+						},
+						HTTPConnMgr: &HTTPConnectionManagerConfig{
 							InlineRouteConfig: inlineRouteConfig,
 							HTTPFilters:       makeRouterFilterList(t),
 						},
