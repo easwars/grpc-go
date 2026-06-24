@@ -105,6 +105,7 @@ type adsStreamImpl struct {
 	// written to afterwards, and hence can be accessed without a mutex.
 	streamCh     chan clients.Stream // New ADS streams are pushed here.
 	runnerDoneCh chan struct{}       // Notify completion of runner goroutine.
+	sendDoneCh   chan struct{}       // Notify completion of send goroutine.
 	cancel       context.CancelFunc  // To cancel the context passed to the runner goroutine.
 	fc           *adsFlowControl     // Flow control for ADS stream.
 	notifySender chan struct{}       // To notify the sending goroutine of a pending request.
@@ -143,6 +144,7 @@ func newADSStreamImpl(opts adsStreamOpts) *adsStreamImpl {
 
 		streamCh:          make(chan clients.Stream, 1),
 		runnerDoneCh:      make(chan struct{}),
+		sendDoneCh:        make(chan struct{}),
 		fc:                newADSFlowControl(),
 		notifySender:      make(chan struct{}, 1),
 		resourceTypeState: make(map[ResourceType]*resourceTypeState),
@@ -162,6 +164,35 @@ func (s *adsStreamImpl) Stop() {
 	s.cancel()
 	s.fc.stop()
 	<-s.runnerDoneCh
+
+	// The send goroutine may be blocked on a Send() call to the transport. gRPC
+	// transport eventually unblocks this call when the ClientConn is closed,
+	// but we should wait for a bit to be defensive.
+	select {
+	case <-s.sendDoneCh:
+	case <-time.After(5 * time.Second):
+		s.logger.Warningf("send goroutine did not exit within 5s; continuing shutdown")
+	}
+
+	// The runner and send goroutines have exited (or we timed out waiting for
+	// the latter), so no internal goroutine will touch the lock-guarded state
+	// again. External callers must not call subscribe/unsubscribe after Stop().
+	// Release everything reachable from `s` so the adsStreamImpl can be
+	// collected.
+	s.mu.Lock()
+	for _, typeState := range s.resourceTypeState {
+		for _, rs := range typeState.subscribedResources {
+			if rs.ExpiryTimer != nil {
+				rs.ExpiryTimer.Stop()
+				rs.ExpiryTimer = nil
+			}
+		}
+		typeState.subscribedResources = nil
+	}
+	s.resourceTypeState = nil
+	s.pendingRequests = nil
+	s.mu.Unlock()
+
 	s.logger.Infof("Shutdown ADS stream")
 }
 
@@ -175,6 +206,11 @@ func (s *adsStreamImpl) subscribe(typ ResourceType, name string) {
 	}
 
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.resourceTypeState == nil {
+		s.logger.Warningf("Subscribe called after stream was stopped")
+		return
+	}
 	state, ok := s.resourceTypeState[typ]
 	if !ok {
 		// An entry in the type state map is created as part of the first
@@ -189,7 +225,6 @@ func (s *adsStreamImpl) subscribe(typ ResourceType, name string) {
 
 	// Send a request for the resource type with updated subscriptions.
 	s.pendingRequests = append(s.pendingRequests, request{typ: typ, resourceNames: resourceNames(state.subscribedResources)})
-	s.mu.Unlock()
 
 	select {
 	case s.notifySender <- struct{}{}:
@@ -207,14 +242,17 @@ func (s *adsStreamImpl) unsubscribe(typ ResourceType, name string) {
 	}
 
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.resourceTypeState == nil {
+		s.logger.Warningf("Unsubscribe called after stream was stopped")
+		return
+	}
 	state, ok := s.resourceTypeState[typ]
 	if !ok {
-		s.mu.Unlock()
 		return
 	}
 	rs, ok := state.subscribedResources[name]
 	if !ok {
-		s.mu.Unlock()
 		return
 	}
 	if rs.ExpiryTimer != nil {
@@ -224,7 +262,6 @@ func (s *adsStreamImpl) unsubscribe(typ ResourceType, name string) {
 
 	// Send a request for the resource type with updated subscriptions.
 	s.pendingRequests = append(s.pendingRequests, request{typ: typ, resourceNames: resourceNames(state.subscribedResources)})
-	s.mu.Unlock()
 
 	select {
 	case s.notifySender <- struct{}{}:
@@ -283,6 +320,7 @@ func (s *adsStreamImpl) runner(ctx context.Context) {
 // - a new subscription or unsubscription request is received
 // - a new stream is created after the previous one failed
 func (s *adsStreamImpl) send(ctx context.Context) {
+	defer close(s.sendDoneCh)
 	// Stores the most recent stream instance received on streamCh.
 	var stream clients.Stream
 	for {
