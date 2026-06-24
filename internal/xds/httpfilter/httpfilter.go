@@ -80,7 +80,15 @@ type ClientInterceptor interface {
 	// delegate.
 	//
 	// Note: RPCInfo.Context is currently unused and will be nil.
-	NewStream(ctx context.Context, ri iresolver.RPCInfo, newStream func(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStream, error), opts ...grpc.CallOption) (grpc.ClientStream, error)
+	//
+	// Note: It is the responsibility of the interceptor to call onDone when not
+	// delegating stream creation to the provided newStream function. This is to
+	// ensure that the RPC is marked as done and any resources are cleaned up.
+	// When delegating stream creation to the provided newStream function,
+	// interceptors may wrap the provided onDone function before passing it
+	// along. This allows interceptors to perform additional cleanup or actions
+	// when the RPC is completed.
+	NewStream(ctx context.Context, ri iresolver.RPCInfo, onDone func(), newStream func(context.Context, iresolver.RPCInfo, func(), ...grpc.CallOption) (grpc.ClientStream, error), opts ...grpc.CallOption) (grpc.ClientStream, error)
 
 	// Close closes the interceptor. Once called, no new calls to NewStream are
 	// accepted. Ongoing calls to NewStream are allowed to complete.

@@ -656,15 +656,15 @@ type interceptorList struct {
 	interceptors []httpfilter.ClientInterceptor
 }
 
-func (il *interceptorList) NewStream(ctx context.Context, ri iresolver.RPCInfo, newStream func(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStream, error), opts ...grpc.CallOption) (grpc.ClientStream, error) {
+func (il *interceptorList) NewStream(ctx context.Context, ri iresolver.RPCInfo, onDone func(), newStream func(context.Context, iresolver.RPCInfo, func(), ...grpc.CallOption) (grpc.ClientStream, error), opts ...grpc.CallOption) (grpc.ClientStream, error) {
 	for idx := len(il.interceptors) - 1; idx >= 0; idx-- {
 		ns := newStream
 		i := il.interceptors[idx]
-		newStream = func(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStream, error) {
-			return i.NewStream(ctx, ri, ns, opts...)
+		newStream = func(ctx context.Context, ri iresolver.RPCInfo, onDone func(), opts ...grpc.CallOption) (grpc.ClientStream, error) {
+			return i.NewStream(ctx, ri, onDone, ns, opts...)
 		}
 	}
-	return newStream(ctx, opts...)
+	return newStream(ctx, ri, onDone, opts...)
 }
 
 func (il *interceptorList) Close() {
