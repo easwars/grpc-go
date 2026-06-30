@@ -26,6 +26,7 @@ import (
 	"io"
 	rand "math/rand/v2"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -148,12 +149,18 @@ type interceptor struct {
 
 var activeFaults uint32 // global active faults; accessed atomically
 
-func (i *interceptor) NewStream(ctx context.Context, _ iresolver.RPCInfo, newStream func(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStream, error), opts ...grpc.CallOption) (grpc.ClientStream, error) {
+func (i *interceptor) NewStream(ctx context.Context, ri iresolver.RPCInfo, onDone func(), newStream func(context.Context, iresolver.RPCInfo, func(), ...grpc.CallOption) (grpc.ClientStream, error), opts ...grpc.CallOption) (_ grpc.ClientStream, err error) {
+	defer func() {
+		if err != nil {
+			onDone()
+		}
+	}()
+
 	if maxAF := i.config.GetMaxActiveFaults(); maxAF != nil {
 		defer atomic.AddUint32(&activeFaults, ^uint32(0)) // decrement counter
 		if af := atomic.AddUint32(&activeFaults, 1); af > maxAF.GetValue() {
 			// Would exceed maximum active fault limit.
-			return newStream(ctx, opts...)
+			return newStream(ctx, ri, onDone, opts...)
 		}
 	}
 
@@ -163,11 +170,11 @@ func (i *interceptor) NewStream(ctx context.Context, _ iresolver.RPCInfo, newStr
 
 	if err := injectAbort(ctx, i.config.GetAbort()); err != nil {
 		if err == errOKStream {
-			return &okStream{ctx: ctx}, nil
+			return newOKStream(ctx, onDone), nil
 		}
 		return nil, err
 	}
-	return newStream(ctx, opts...)
+	return newStream(ctx, ri, onDone, opts...)
 }
 
 func (i *interceptor) Close() {}
@@ -300,7 +307,8 @@ func sanitizeGRPCCode(c codes.Code) codes.Code {
 }
 
 type okStream struct {
-	ctx context.Context
+	ctx    context.Context
+	onDone func()
 }
 
 func (*okStream) Header() (metadata.MD, error) { return nil, nil }
@@ -308,4 +316,17 @@ func (*okStream) Trailer() metadata.MD         { return nil }
 func (*okStream) CloseSend() error             { return nil }
 func (o *okStream) Context() context.Context   { return o.ctx }
 func (*okStream) SendMsg(any) error            { return io.EOF }
-func (*okStream) RecvMsg(any) error            { return io.EOF }
+func (o *okStream) RecvMsg(any) error {
+	o.onDone()
+	return io.EOF
+}
+
+func newOKStream(ctx context.Context, onDone func()) *okStream {
+	onceOnDone := sync.OnceFunc(onDone)
+	s := &okStream{ctx: ctx, onDone: onceOnDone}
+	go func() {
+		<-ctx.Done()
+		onceOnDone()
+	}()
+	return s
+}

@@ -20,12 +20,14 @@
 package extproc
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/internal/envconfig"
 	"google.golang.org/grpc/internal/optional"
+	iresolver "google.golang.org/grpc/internal/resolver"
 	"google.golang.org/grpc/internal/xds/httpfilter"
 	"google.golang.org/grpc/internal/xds/matcher"
 	"google.golang.org/grpc/internal/xds/xdsclient/xdsresource"
@@ -233,6 +235,10 @@ type clientInterceptor struct {
 	config    baseConfig
 	extClient v3procservicegrpc.ExternalProcessorClient
 	cancel    func() error
+}
+
+func (i *clientInterceptor) NewStream(ctx context.Context, ri iresolver.RPCInfo, onDone func(), newStream func(context.Context, iresolver.RPCInfo, func(), ...grpc.CallOption) (grpc.ClientStream, error), opts ...grpc.CallOption) (grpc.ClientStream, error) {
+	return newStream(ctx, ri, onDone, opts...)
 }
 
 func (i *clientInterceptor) Close() {

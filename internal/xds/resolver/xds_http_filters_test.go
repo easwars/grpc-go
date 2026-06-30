@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -54,6 +55,8 @@ import (
 	v3listenerpb "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	v3routepb "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	v3httppb "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	fpb "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/fault/v3"
+	tpb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	testgrpc "google.golang.org/grpc/interop/grpc_testing"
 	testpb "google.golang.org/grpc/interop/grpc_testing"
 
@@ -111,6 +114,7 @@ type testHTTPFilterWithRPCMetadata struct {
 	logger        logger
 	typeURL       string
 	newStreamChan *testutils.Channel // If set, filter config is written to this field from NewStream()
+	onDoneChan    *testutils.Channel // If set, an empty struct is written to this field from the onDone callback
 }
 
 func (fb *testHTTPFilterWithRPCMetadata) TypeURLs() []string { return []string{fb.typeURL} }
@@ -163,6 +167,7 @@ func (fb *testHTTPFilterWithRPCMetadata) BuildClientInterceptor(config, override
 			Error:        newStreamErr,
 		},
 		newStreamChan: fb.newStreamChan,
+		onDoneChan:    fb.onDoneChan,
 	}, nil
 }
 
@@ -180,9 +185,10 @@ type testFilterInterceptor struct {
 	logger        logger
 	cfg           overallFilterConfig
 	newStreamChan *testutils.Channel // If set, filter config is written to this field from NewStream()
+	onDoneChan    *testutils.Channel // If set, an empty struct is written to this field from the onDone callback
 }
 
-func (fi *testFilterInterceptor) NewStream(ctx context.Context, _ iresolver.RPCInfo, newStream func(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStream, error), opts ...grpc.CallOption) (grpc.ClientStream, error) {
+func (fi *testFilterInterceptor) NewStream(ctx context.Context, ri iresolver.RPCInfo, onDone func(), newStream func(context.Context, iresolver.RPCInfo, func(), ...grpc.CallOption) (grpc.ClientStream, error), opts ...grpc.CallOption) (grpc.ClientStream, error) {
 	// Write the config to the channel, if set. This allows tests to verify that
 	// the filter was invoked at RPC time. This is useful for tests where the
 	// RPC is expected to fail, and therefore the RPC metadata cannot be
@@ -191,19 +197,29 @@ func (fi *testFilterInterceptor) NewStream(ctx context.Context, _ iresolver.RPCI
 		fi.newStreamChan.Send(fi.cfg)
 	}
 
+	wrappedOnDone := func() {
+		fi.logger.Logf("onDone callback invoked for filter with config: %+v", fi.cfg)
+		onDone()
+		if fi.onDoneChan != nil {
+			fi.onDoneChan.Replace(struct{}{})
+		}
+	}
+
 	if fi.cfg.Error != "" {
+		wrappedOnDone()
 		return nil, status.Error(codes.Unavailable, fi.cfg.Error)
 	}
 
 	// Marshal the filter config to JSON and inject it as metadata.
 	bytes, err := json.Marshal(fi.cfg)
 	if err != nil {
+		wrappedOnDone()
 		return nil, fmt.Errorf("failed to marshal filter config: %w", err)
 	}
 	cfg := string(bytes)
 	fi.logger.Logf("Injecting filter config metadata: %v", cfg)
 
-	return newStream(metadata.AppendToOutgoingContext(ctx, filterCfgMetadataKey, cfg), opts...)
+	return newStream(metadata.AppendToOutgoingContext(ctx, filterCfgMetadataKey, cfg), ri, wrappedOnDone, opts...)
 }
 
 func (fi *testFilterInterceptor) Close() {}
@@ -720,9 +736,9 @@ type trackingInterceptor struct {
 	basePath string
 }
 
-func (i *trackingInterceptor) NewStream(ctx context.Context, _ iresolver.RPCInfo, newStream func(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStream, error), opts ...grpc.CallOption) (grpc.ClientStream, error) {
+func (i *trackingInterceptor) NewStream(ctx context.Context, ri iresolver.RPCInfo, onDone func(), newStream func(context.Context, iresolver.RPCInfo, func(), ...grpc.CallOption) (grpc.ClientStream, error), opts ...grpc.CallOption) (grpc.ClientStream, error) {
 	i.pathCh <- i.basePath
-	return newStream(ctx, opts...)
+	return newStream(ctx, ri, onDone, opts...)
 }
 
 func (i *trackingInterceptor) Close() {
@@ -1458,5 +1474,243 @@ func (s) TestXDSResolverHTTPFilters_EnabledInOverride(t *testing.T) {
 				t.Fatalf("Unexpected BasePath, got: %q, want: %q", got, want)
 			}
 		})
+	}
+}
+
+// TestXDSResolverHTTPFilters_OnDone tests that the OnDone callback provided to
+// the filter is called when the RPC is completed.
+func (s) TestXDSResolverHTTPFilters_OnDone(t *testing.T) {
+	// Register a custom httpFilter builder for the test and use a channel to
+	// get notified when the onDone callback is invoked.
+	testFilterName := t.Name()
+	fb := &testHTTPFilterWithRPCMetadata{
+		logger:     t,
+		typeURL:    testFilterName,
+		onDoneChan: testutils.NewChannelWithSize(100),
+	}
+	httpfilter.Register(fb)
+	defer httpfilter.UnregisterForTesting(fb.typeURL)
+
+	// Spin up an xDS management server
+	mgmtServer := e2e.StartManagementServer(t, e2e.ManagementServerOptions{AllowResourceSubset: true})
+	defer mgmtServer.Stop()
+
+	// Create an xDS resolver with bootstrap configuration pointing to the above
+	// management server.
+	nodeID := uuid.New().String()
+	bootstrapContents := e2e.DefaultBootstrapContents(t, nodeID, mgmtServer.Address)
+	resolverBuilder, err := internal.NewXDSResolverWithConfigForTesting.(func([]byte) (resolver.Builder, error))(bootstrapContents)
+	if err != nil {
+		t.Fatalf("Failed to create xDS resolver for testing: %v", err)
+	}
+
+	// Start a test backend.
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
+	defer cancel()
+	backend := &stubserver.StubServer{
+		EmptyCallF: func(context.Context, *testpb.Empty) (*testpb.Empty, error) {
+			return &testpb.Empty{}, nil
+		},
+		FullDuplexCallF: func(stream testgrpc.TestService_FullDuplexCallServer) error {
+			for {
+				if _, err := stream.Recv(); err != nil {
+					if err == io.EOF {
+						return nil
+					}
+					return err
+				}
+			}
+		},
+	}
+	stubserver.StartTestService(t, backend)
+	defer backend.Stop()
+
+	// Configure resources on the management server.
+	const testServiceName = "service-name"
+	listener := &v3listenerpb.Listener{
+		Name: testServiceName,
+		ApiListener: &v3listenerpb.ApiListener{
+			ApiListener: testutils.MarshalAny(t, &v3httppb.HttpConnectionManager{
+				RouteSpecifier: &v3httppb.HttpConnectionManager_RouteConfig{
+					RouteConfig: &v3routepb.RouteConfiguration{
+						Name: "route-config",
+						VirtualHosts: []*v3routepb.VirtualHost{{
+							Domains: []string{testServiceName},
+							Routes: []*v3routepb.Route{{
+								Match: &v3routepb.RouteMatch{PathSpecifier: &v3routepb.RouteMatch_Prefix{Prefix: ""}},
+								Action: &v3routepb.Route_Route{Route: &v3routepb.RouteAction{
+									ClusterSpecifier: &v3routepb.RouteAction_Cluster{Cluster: "A"},
+								}},
+							}},
+						}},
+					},
+				},
+				HttpFilters: []*v3httppb.HttpFilter{
+					newHTTPFilter(t, "foo", testFilterName, "foo-path", ""),
+					e2e.RouterHTTPFilter,
+				},
+			}),
+		},
+	}
+	resources := e2e.UpdateOptions{
+		NodeID:    nodeID,
+		Listeners: []*v3listenerpb.Listener{listener},
+		Clusters:  []*v3clusterpb.Cluster{e2e.DefaultCluster("A", "endpoint_A", e2e.SecurityLevelNone)},
+		Endpoints: []*v3endpointpb.ClusterLoadAssignment{e2e.DefaultEndpoint("endpoint_A", "localhost", []uint32{testutils.ParsePort(t, backend.Address)})},
+	}
+	if err := mgmtServer.Update(ctx, resources); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a gRPC client using the xDS resolver.
+	cc, err := grpc.NewClient("xds:///"+testServiceName, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithResolvers(resolverBuilder))
+	if err != nil {
+		t.Fatalf("Failed to create a gRPC client: %v", err)
+	}
+	defer cc.Close()
+
+	client := testgrpc.NewTestServiceClient(cc)
+
+	// Case 1: Successful Unary RPC.
+	if _, err := client.EmptyCall(ctx, &testpb.Empty{}); err != nil {
+		t.Fatalf("EmptyCall() failed: %v", err)
+	}
+	if _, err := fb.onDoneChan.Receive(ctx); err != nil {
+		t.Fatal("Timeout waiting for onDone callback after successful unary RPC")
+	}
+
+	// Case 2: Failed Unary RPC.
+	// We can't easily make it fail at the transport layer here without more setup,
+	// but failing at the application layer should also trigger onDone.
+	backend.EmptyCallF = func(context.Context, *testpb.Empty) (*testpb.Empty, error) {
+		return nil, status.Error(codes.Aborted, "aborted by test")
+	}
+	if _, err := client.EmptyCall(ctx, &testpb.Empty{}); status.Code(err) != codes.Aborted {
+		t.Fatalf("EmptyCall() returned error code %v, want %v", status.Code(err), codes.Aborted)
+	}
+	if _, err := fb.onDoneChan.Receive(ctx); err != nil {
+		t.Fatal("Timeout waiting for onDone callback after failed unary RPC")
+	}
+
+	// Case 3: Streaming RPC.
+	stream, err := client.FullDuplexCall(ctx)
+	if err != nil {
+		t.Fatalf("FullDuplexCall() failed: %v", err)
+	}
+	stream.CloseSend()
+	if _, err := stream.Recv(); err != io.EOF {
+		t.Fatalf("Recv() returned error %v, want io.EOF", err)
+	}
+	if _, err := fb.onDoneChan.Receive(ctx); err != nil {
+		t.Fatal("Timeout waiting for onDone callback after successful streaming RPC")
+	}
+
+	// Case 4: Fault Injection Abort.
+	// We update the resources to include a fault filter that always aborts.
+	resources.Listeners[0].ApiListener.ApiListener = testutils.MarshalAny(t, &v3httppb.HttpConnectionManager{
+		RouteSpecifier: &v3httppb.HttpConnectionManager_RouteConfig{
+			RouteConfig: &v3routepb.RouteConfiguration{
+				Name: "route-config",
+				VirtualHosts: []*v3routepb.VirtualHost{{
+					Domains: []string{testServiceName},
+					Routes: []*v3routepb.Route{{
+						Match: &v3routepb.RouteMatch{PathSpecifier: &v3routepb.RouteMatch_Prefix{Prefix: ""}},
+						Action: &v3routepb.Route_Route{Route: &v3routepb.RouteAction{
+							ClusterSpecifier: &v3routepb.RouteAction_Cluster{Cluster: "A"},
+						}},
+					}},
+				}},
+			},
+		},
+		HttpFilters: []*v3httppb.HttpFilter{
+			{
+				Name: "fault",
+				ConfigType: &v3httppb.HttpFilter_TypedConfig{
+					TypedConfig: testutils.MarshalAny(t, &fpb.HTTPFault{
+						Abort: &fpb.FaultAbort{
+							Percentage: &tpb.FractionalPercent{Numerator: 100, Denominator: tpb.FractionalPercent_HUNDRED},
+							ErrorType:  &fpb.FaultAbort_GrpcStatus{GrpcStatus: uint32(codes.Unavailable)},
+						},
+					}),
+				},
+			},
+			e2e.RouterHTTPFilter,
+		},
+	})
+	if err := mgmtServer.Update(ctx, resources); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the new config to be applied.
+	for {
+		_, err := client.EmptyCall(ctx, &testpb.Empty{})
+		if status.Code(err) == codes.Unavailable {
+			break
+		}
+
+		select {
+		case <-ctx.Done():
+			t.Fatalf("Timeout waiting for fault injection config to be applied: %v", ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+
+	// Case 5: Fault Injection OK Abort (verifies okStream).
+	// Put test filter before fault filter so it can wrap onDone.
+	resources.Listeners[0].ApiListener.ApiListener = testutils.MarshalAny(t, &v3httppb.HttpConnectionManager{
+		RouteSpecifier: &v3httppb.HttpConnectionManager_RouteConfig{
+			RouteConfig: &v3routepb.RouteConfiguration{
+				Name: "route-config",
+				VirtualHosts: []*v3routepb.VirtualHost{{
+					Domains: []string{testServiceName},
+					Routes: []*v3routepb.Route{{
+						Match: &v3routepb.RouteMatch{PathSpecifier: &v3routepb.RouteMatch_Prefix{Prefix: ""}},
+						Action: &v3routepb.Route_Route{Route: &v3routepb.RouteAction{
+							ClusterSpecifier: &v3routepb.RouteAction_Cluster{Cluster: "A"},
+						}},
+					}},
+				}},
+			},
+		},
+		HttpFilters: []*v3httppb.HttpFilter{
+			newHTTPFilter(t, "foo", testFilterName, "foo-path", ""),
+			{
+				Name: "fault",
+				ConfigType: &v3httppb.HttpFilter_TypedConfig{
+					TypedConfig: testutils.MarshalAny(t, &fpb.HTTPFault{
+						Abort: &fpb.FaultAbort{
+							Percentage: &tpb.FractionalPercent{Numerator: 100, Denominator: tpb.FractionalPercent_HUNDRED},
+							ErrorType:  &fpb.FaultAbort_GrpcStatus{GrpcStatus: uint32(codes.OK)},
+						},
+					}),
+				},
+			},
+			e2e.RouterHTTPFilter,
+		},
+	})
+	if err := mgmtServer.Update(ctx, resources); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the new config to be applied.
+	// We distinguish it by checking if it bypasses the failing backend.
+	// okStream returns io.EOF, which Unary RPCs translate to codes.Unknown.
+	backend.EmptyCallF = func(context.Context, *testpb.Empty) (*testpb.Empty, error) {
+		return nil, status.Error(codes.Internal, "should not reach backend")
+	}
+	for {
+		_, err := client.EmptyCall(ctx, &testpb.Empty{})
+		if status.Code(err) == codes.Unknown {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("Timeout waiting for fault injection config to be applied: %v", ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+
+	if _, err := fb.onDoneChan.Receive(ctx); err != nil {
+		t.Fatal("Timeout waiting for onDone callback after fault injection OK abort")
 	}
 }

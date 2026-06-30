@@ -206,7 +206,7 @@ func endOfClientStream(cc *ClientConn, err error, opts ...CallOption) {
 // we can type-assert the generic Interceptor field in iresolver.RPCConfig
 // without introducing a dependency on xDS packages.
 type clientInterceptor interface {
-	NewStream(ctx context.Context, ri iresolver.RPCInfo, newStream func(ctx context.Context, opts ...CallOption) (ClientStream, error), opts ...CallOption) (ClientStream, error)
+	NewStream(ctx context.Context, ri iresolver.RPCInfo, onDone func(), newStream func(ctx context.Context, ri iresolver.RPCInfo, onDone func(), opts ...CallOption) (ClientStream, error), opts ...CallOption) (ClientStream, error)
 	Close()
 }
 
@@ -252,13 +252,14 @@ func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 	}
 
 	mc := &emptyMethodConfig
-	var onCommit func()
-	newStream := func(ctx context.Context, filterOpts ...CallOption) (ClientStream, error) {
+	var onCommit, onDone func()
+	newStream := func(ctx context.Context, od func(), filterOpts ...CallOption) (ClientStream, error) {
 		if filterOpts != nil {
 			opts = combine(opts, filterOpts)
 		}
-		return newClientStreamWithParams(ctx, desc, cc, method, mc, onCommit, nameResolutionDelayed, opts...)
+		return newClientStreamWithParams(ctx, desc, cc, method, mc, onCommit, od, nameResolutionDelayed, opts...)
 	}
+
 
 	rpcInfo := iresolver.RPCInfo{Context: ctx, Method: method}
 	rpcConfig, err := cc.safeConfigSelector.SelectConfig(rpcInfo)
@@ -279,12 +280,16 @@ func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 		}
 		mc = &rpcConfig.MethodConfig
 		onCommit = rpcConfig.OnCommitted
+		onDone = rpcConfig.OnDone
 		if rpcConfig.Interceptor != nil {
 			rpcInfo.Context = nil
 			ns := newStream
 			if interceptor, ok := rpcConfig.Interceptor.(clientInterceptor); ok {
-				newStream = func(ctx context.Context, filterOpts ...CallOption) (ClientStream, error) {
-					cs, err := interceptor.NewStream(ctx, rpcInfo, ns, filterOpts...)
+				newStream = func(ctx context.Context, od func(), filterOpts ...CallOption) (ClientStream, error) {
+					streamer := func(ctx context.Context, ri iresolver.RPCInfo, od func(), opts ...CallOption) (ClientStream, error) {
+						return ns(ctx, od, opts...)
+					}
+					cs, err := interceptor.NewStream(ctx, rpcInfo, od, streamer, filterOpts...)
 					if err != nil {
 						return nil, toRPCErr(err)
 					}
@@ -296,10 +301,10 @@ func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 		}
 	}
 
-	return newStream(ctx)
+	return newStream(ctx, onDone)
 }
 
-func newClientStreamWithParams(ctx context.Context, desc *StreamDesc, cc *ClientConn, method string, mc *serviceconfig.MethodConfig, onCommit func(), nameResolutionDelayed bool, opts ...CallOption) (_ ClientStream, err error) {
+func newClientStreamWithParams(ctx context.Context, desc *StreamDesc, cc *ClientConn, method string, mc *serviceconfig.MethodConfig, onCommit, onDone func(), nameResolutionDelayed bool, opts ...CallOption) (_ ClientStream, err error) {
 	callInfo := defaultCallInfo()
 	if mc.WaitForReady != nil {
 		callInfo.failFast = !*mc.WaitForReady
@@ -380,6 +385,7 @@ func newClientStreamWithParams(ctx context.Context, desc *StreamDesc, cc *Client
 		cancel:              cancel,
 		firstAttempt:        true,
 		onCommit:            onCommit,
+		onDone:              onDone,
 		nameResolutionDelay: nameResolutionDelayed,
 	}
 	if !cc.dopts.disableRetry {
@@ -634,6 +640,7 @@ type clientStream struct {
 	// TODO(hedging): hedging will have multiple attempts simultaneously.
 	committed        bool // active attempt committed for retry?
 	onCommit         func()
+	onDone           func()
 	replayBuffer     []replayOp // operations to replay on retry
 	replayBufferSize int        // current size of replayBuffer
 	// nameResolutionDelay indicates if there was a delay in the name resolution.
@@ -1133,6 +1140,9 @@ func (cs *clientStream) finish(err error) {
 	}
 	endOfClientStream(cs.cc, err, cs.opts...)
 	cs.cancel()
+	if cs.onDone != nil {
+		cs.onDone()
+	}
 }
 
 func (a *csAttempt) sendMsg(m any, hdr []byte, payld mem.BufferSlice, dataLength, payloadLength int) error {

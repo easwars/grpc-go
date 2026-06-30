@@ -51,6 +51,7 @@ type RPCConfig struct {
 	Context      context.Context
 	MethodConfig serviceconfig.MethodConfig // configuration to use for this RPC
 	OnCommitted  func()                     // Called when the RPC has been committed (retries no longer possible)
+	OnDone       func()                     // Called when the RPC is done (success or failure)
 	Interceptor  any
 }
 
