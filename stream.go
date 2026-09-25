@@ -150,11 +150,58 @@ type ClientStream interface {
 }
 
 // clientStreamWrapper wraps a ClientStream and handles SendMsg, CloseSend, and
-// RecvMsg parities based on the nature of stream.
+// RecvMsg semantics based on the nature of the stream, as well as executing
+// CallOption.after callbacks and ensuring the innermost clientStream is
+// finished when the stream terminates.
 type clientStreamWrapper struct {
 	ClientStream
 	desc            *StreamDesc
+	opts            []CallOption
 	closeSendCalled atomic.Bool
+
+	finishMu  sync.Mutex
+	innermost *clientStream
+	finished  bool
+	finishErr error
+}
+
+func (w *clientStreamWrapper) setInnermost(cs *clientStream) {
+	w.finishMu.Lock()
+	defer w.finishMu.Unlock()
+	w.innermost = cs
+	if w.finished {
+		cs.finish(w.finishErr)
+	}
+}
+
+func (w *clientStreamWrapper) getInnermost() *clientStream {
+	w.finishMu.Lock()
+	defer w.finishMu.Unlock()
+	return w.innermost
+}
+
+func (w *clientStreamWrapper) finish(err error) {
+	if err == io.EOF {
+		err = nil
+	}
+	w.finishMu.Lock()
+	if w.finished {
+		w.finishMu.Unlock()
+		return
+	}
+	w.finished = true
+	w.finishErr = err
+	innermost := w.innermost
+	w.finishMu.Unlock()
+
+	var ci *callInfo
+	if innermost != nil {
+		innermost.finish(err)
+		ci = innermost.callInfo
+	}
+	for _, o := range w.opts {
+		o.after(ci, w.ClientStream)
+	}
 }
 
 // CloseSend closes the send direction of the stream. The implementation ensures
@@ -176,6 +223,9 @@ func (w *clientStreamWrapper) SendMsg(m any) error {
 	// messages. In this case, the client should handle any type of
 	// error,including io.EOF and call CloseSend once it is done sending messages.
 	if w.desc.ClientStreams {
+		if err != nil && err != io.EOF {
+			w.finish(err)
+		}
 		return err
 	}
 
@@ -186,6 +236,7 @@ func (w *clientStreamWrapper) SendMsg(m any) error {
 		return nil
 	}
 	if err != nil {
+		w.finish(err)
 		return err
 	}
 	// In some scenarios (e.g., xDS), the same interceptors process both unary and
@@ -195,10 +246,10 @@ func (w *clientStreamWrapper) SendMsg(m any) error {
 	// interceptors are also notified when callers interact with the ClientStream
 	// API directly.
 	if err := w.CloseSend(); err != nil && err != io.EOF {
+		w.finish(err)
 		return err
 	}
 	return nil
-
 }
 
 // RecvMsg receives message m from the stream. For non-server-streaming RPCs
@@ -207,6 +258,7 @@ func (w *clientStreamWrapper) SendMsg(m any) error {
 func (w *clientStreamWrapper) RecvMsg(m any) error {
 	err := w.ClientStream.RecvMsg(m)
 	if err != nil {
+		w.finish(err)
 		return err
 	}
 	if w.desc.ServerStreams {
@@ -216,11 +268,13 @@ func (w *clientStreamWrapper) RecvMsg(m any) error {
 	// ensure RPC has completed successfully.
 	err = w.ClientStream.RecvMsg(m)
 	if err == io.EOF {
+		w.finish(nil)
 		return nil
 	}
 	if err == nil {
-		return status.Error(codes.Internal, "cardinality violation: expected <EOF> for non server-streaming RPCs, but received another message")
+		err = status.Error(codes.Internal, "cardinality violation: expected <EOF> for non server-streaming RPCs, but received another message")
 	}
+	w.finish(err)
 	return err
 }
 
@@ -290,10 +344,15 @@ func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 	if channelz.IsOn() {
 		cc.incrCallsStarted()
 	}
+	w := &clientStreamWrapper{desc: desc}
 	defer func() {
 		if err != nil {
 			// Ensure cleanup when stream creation fails.
-			endOfClientStream(cc, err, opts...)
+			if cs := w.getInnermost(); cs != nil {
+				cs.finish(err)
+			} else {
+				endOfClientStream(cc, err, opts...)
+			}
 		}
 	}()
 
@@ -305,6 +364,7 @@ func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 	// Add a calloption, to decrement the active call count, that gets executed
 	// when the RPC completes.
 	opts = append([]CallOption{OnFinish(func(error) { cc.idlenessMgr.OnCallEnd() })}, opts...)
+	w.opts = opts
 
 	if md, added, ok := metadataFromOutgoingContextRaw(ctx); ok {
 		// validate md
@@ -329,7 +389,12 @@ func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 
 	mc := &emptyMethodConfig
 	newStream := func(ctx context.Context, opts ...CallOption) (ClientStream, error) {
-		return newClientStreamWithParams(ctx, desc, cc, method, mc, nameResolutionDelayed, opts...)
+		cs, err := newClientStreamWithParams(ctx, desc, cc, method, mc, nameResolutionDelayed, opts...)
+		if err != nil {
+			return nil, err
+		}
+		w.setInnermost(cs)
+		return cs, nil
 	}
 
 	rpcInfo := iresolver.RPCInfo{Context: ctx, Method: method, Authority: cc.authority}
@@ -372,10 +437,11 @@ func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 	if err != nil {
 		return nil, err
 	}
-	return &clientStreamWrapper{ClientStream: cs, desc: desc}, nil
+	w.ClientStream = cs
+	return w, nil
 }
 
-func newClientStreamWithParams(ctx context.Context, desc *StreamDesc, cc *ClientConn, method string, mc *serviceconfig.MethodConfig, nameResolutionDelayed bool, opts ...CallOption) (_ ClientStream, err error) {
+func newClientStreamWithParams(ctx context.Context, desc *StreamDesc, cc *ClientConn, method string, mc *serviceconfig.MethodConfig, nameResolutionDelayed bool, opts ...CallOption) (_ *clientStream, err error) {
 	callInfo := defaultCallInfo()
 	if mc.WaitForReady != nil {
 		callInfo.failFast = !*mc.WaitForReady
@@ -1191,12 +1257,6 @@ func (cs *clientStream) finish(err error) {
 	attemptCreated := cs.attempt != nil
 	if attemptCreated {
 		cs.attempt.finish(err)
-		// after functions all rely upon having a stream.
-		if cs.attempt.transportStream != nil {
-			for _, o := range cs.opts {
-				o.after(cs.callInfo, cs.attempt)
-			}
-		}
 	}
 
 	cs.mu.Unlock()

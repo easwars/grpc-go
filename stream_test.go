@@ -21,14 +21,21 @@ package grpc_test
 import (
 	"context"
 	"io"
+	"net"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/internal/grpctest"
+	iresolver "google.golang.org/grpc/internal/resolver"
 	"google.golang.org/grpc/internal/stubserver"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/resolver"
+	"google.golang.org/grpc/resolver/manual"
 	"google.golang.org/grpc/status"
 
 	testgrpc "google.golang.org/grpc/interop/grpc_testing"
@@ -239,5 +246,321 @@ func (s) TestDefaultStreamInterceptor(t *testing.T) {
 	}
 	if iStream.closeSendCount != 1 {
 		t.Fatalf("CloseSend called %v times on user interceptor stream, want 1 times", iStream.closeSendCount)
+	}
+}
+
+type funcConfigSelector struct {
+	f func(iresolver.RPCInfo) (*iresolver.RPCConfig, error)
+}
+
+func (f funcConfigSelector) SelectConfig(i iresolver.RPCInfo) (*iresolver.RPCConfig, error) {
+	return f.f(i)
+}
+
+type testClientInterceptor struct {
+	newStream func(ctx context.Context, ri iresolver.RPCInfo, newStream func(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStream, error), opts ...grpc.CallOption) (grpc.ClientStream, error)
+}
+
+func (i *testClientInterceptor) NewStream(ctx context.Context, ri iresolver.RPCInfo, newStream func(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStream, error), opts ...grpc.CallOption) (grpc.ClientStream, error) {
+	return i.newStream(ctx, ri, newStream, opts...)
+}
+
+func (i *testClientInterceptor) Close() {}
+
+type mutatingClientStream struct {
+	grpc.ClientStream
+	extraHeader  metadata.MD
+	extraTrailer metadata.MD
+	overridePeer *peer.Peer
+	sendMsgErr   error
+	closeSendErr error
+	recvMsgErr   error
+}
+
+func (s *mutatingClientStream) Header() (metadata.MD, error) {
+	md, err := s.ClientStream.Header()
+	if err != nil {
+		return md, err
+	}
+	return metadata.Join(md, s.extraHeader), nil
+}
+
+func (s *mutatingClientStream) Trailer() metadata.MD {
+	md := s.ClientStream.Trailer()
+	return metadata.Join(md, s.extraTrailer)
+}
+
+func (s *mutatingClientStream) Context() context.Context {
+	ctx := s.ClientStream.Context()
+	if s.overridePeer != nil {
+		return peer.NewContext(ctx, s.overridePeer)
+	}
+	return ctx
+}
+
+func (s *mutatingClientStream) SendMsg(m any) error {
+	if s.sendMsgErr != nil {
+		return s.sendMsgErr
+	}
+	return s.ClientStream.SendMsg(m)
+}
+
+func (s *mutatingClientStream) CloseSend() error {
+	if s.closeSendErr != nil {
+		return s.closeSendErr
+	}
+	return s.ClientStream.CloseSend()
+}
+
+func (s *mutatingClientStream) RecvMsg(m any) error {
+	if s.recvMsgErr != nil {
+		return s.recvMsgErr
+	}
+	return s.ClientStream.RecvMsg(m)
+}
+
+// TestClientStream_CallOptionAfterWithInterceptor verifies that Header,
+// Trailer, and Peer CallOptions observe values returned by the ClientStream
+// wrapped by an RPCConfig.Interceptor (e.g., xDS HTTP filters).
+func (s) TestClientStream_CallOptionAfterWithInterceptor(t *testing.T) {
+	ss := &stubserver.StubServer{
+		EmptyCallF: func(ctx context.Context, _ *testpb.Empty) (*testpb.Empty, error) {
+			grpc.SetHeader(ctx, metadata.Pairs("server-header", "server-header-val"))
+			grpc.SetTrailer(ctx, metadata.Pairs("server-trailer", "server-trailer-val"))
+			return &testpb.Empty{}, nil
+		},
+	}
+	ss.R = manual.NewBuilderWithScheme("callopt-after")
+	if err := ss.Start(nil); err != nil {
+		t.Fatalf("Error starting stub server: %v", err)
+	}
+	defer ss.Stop()
+
+	wantPeer := &peer.Peer{
+		Addr: &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 12345},
+	}
+	interceptor := &testClientInterceptor{
+		newStream: func(ctx context.Context, _ iresolver.RPCInfo, newStream func(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStream, error), opts ...grpc.CallOption) (grpc.ClientStream, error) {
+			cs, err := newStream(ctx, opts...)
+			if err != nil {
+				return nil, err
+			}
+			return &mutatingClientStream{
+				ClientStream: cs,
+				extraHeader:  metadata.Pairs("filter-header", "filter-header-val"),
+				extraTrailer: metadata.Pairs("filter-trailer", "filter-trailer-val"),
+				overridePeer: wantPeer,
+			}, nil
+		},
+	}
+
+	state := iresolver.SetConfigSelector(resolver.State{
+		Addresses:     []resolver.Address{{Addr: ss.Address}},
+		ServiceConfig: ss.R.CC().ParseServiceConfig("{}"),
+	}, funcConfigSelector{
+		f: func(iresolver.RPCInfo) (*iresolver.RPCConfig, error) {
+			return &iresolver.RPCConfig{Interceptor: interceptor}, nil
+		},
+	})
+	ss.R.UpdateState(state)
+
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
+	defer cancel()
+
+	var gotHeader, gotTrailer metadata.MD
+	var gotPeer peer.Peer
+	if _, err := ss.Client.EmptyCall(ctx, &testpb.Empty{}, grpc.Header(&gotHeader), grpc.Trailer(&gotTrailer), grpc.Peer(&gotPeer)); err != nil {
+		t.Fatalf("EmptyCall() failed: %v", err)
+	}
+
+	if got := gotHeader.Get("server-header"); !cmp.Equal(got, []string{"server-header-val"}) {
+		t.Errorf("gotHeader[server-header] = %v, want [server-header-val]", got)
+	}
+	if got := gotHeader.Get("filter-header"); !cmp.Equal(got, []string{"filter-header-val"}) {
+		t.Errorf("gotHeader[filter-header] = %v, want [filter-header-val]", got)
+	}
+	if got := gotTrailer.Get("server-trailer"); !cmp.Equal(got, []string{"server-trailer-val"}) {
+		t.Errorf("gotTrailer[server-trailer] = %v, want [server-trailer-val]", got)
+	}
+	if got := gotTrailer.Get("filter-trailer"); !cmp.Equal(got, []string{"filter-trailer-val"}) {
+		t.Errorf("gotTrailer[filter-trailer] = %v, want [filter-trailer-val]", got)
+	}
+	if !cmp.Equal(gotPeer.Addr, wantPeer.Addr) {
+		t.Errorf("gotPeer.Addr = %v, want %v", gotPeer.Addr, wantPeer.Addr)
+	}
+}
+
+// TestClientStream_OnFinishWhenInterceptorAborts verifies that when an
+// RPCConfig.Interceptor creates the underlying innermost ClientStream and then
+// aborts early (in NewStream, SendMsg, CloseSend, or RecvMsg) without
+// delegating to the innermost stream, the innermost stream is still finished
+// and OnFinish callbacks are executed exactly once.
+func (s) TestClientStream_OnFinishWhenInterceptorAborts(t *testing.T) {
+	wantErr := status.Error(codes.PermissionDenied, "aborted by filter")
+
+	tests := []struct {
+		name        string
+		interceptor *testClientInterceptor
+		makeRPC     func(ctx context.Context, client testgrpc.TestServiceClient, opt grpc.CallOption) error
+	}{
+		{
+			name: "abort_in_NewStream_after_creating_innermost",
+			interceptor: &testClientInterceptor{
+				newStream: func(ctx context.Context, _ iresolver.RPCInfo, newStream func(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStream, error), opts ...grpc.CallOption) (grpc.ClientStream, error) {
+					if _, err := newStream(ctx, opts...); err != nil {
+						return nil, err
+					}
+					return nil, wantErr
+				},
+			},
+			makeRPC: func(ctx context.Context, client testgrpc.TestServiceClient, opt grpc.CallOption) error {
+				_, err := client.EmptyCall(ctx, &testpb.Empty{}, opt)
+				return err
+			},
+		},
+		{
+			name: "abort_in_SendMsg_unary",
+			interceptor: &testClientInterceptor{
+				newStream: func(ctx context.Context, _ iresolver.RPCInfo, newStream func(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStream, error), opts ...grpc.CallOption) (grpc.ClientStream, error) {
+					cs, err := newStream(ctx, opts...)
+					if err != nil {
+						return nil, err
+					}
+					return &mutatingClientStream{ClientStream: cs, sendMsgErr: wantErr}, nil
+				},
+			},
+			makeRPC: func(ctx context.Context, client testgrpc.TestServiceClient, opt grpc.CallOption) error {
+				_, err := client.EmptyCall(ctx, &testpb.Empty{}, opt)
+				return err
+			},
+		},
+		{
+			name: "abort_in_SendMsg_client_streaming",
+			interceptor: &testClientInterceptor{
+				newStream: func(ctx context.Context, _ iresolver.RPCInfo, newStream func(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStream, error), opts ...grpc.CallOption) (grpc.ClientStream, error) {
+					cs, err := newStream(ctx, opts...)
+					if err != nil {
+						return nil, err
+					}
+					return &mutatingClientStream{ClientStream: cs, sendMsgErr: wantErr}, nil
+				},
+			},
+			makeRPC: func(ctx context.Context, client testgrpc.TestServiceClient, opt grpc.CallOption) error {
+				stream, err := client.StreamingInputCall(ctx, opt)
+				if err != nil {
+					return err
+				}
+				return stream.Send(&testpb.StreamingInputCallRequest{})
+			},
+		},
+		{
+			name: "abort_in_CloseSend_unary",
+			interceptor: &testClientInterceptor{
+				newStream: func(ctx context.Context, _ iresolver.RPCInfo, newStream func(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStream, error), opts ...grpc.CallOption) (grpc.ClientStream, error) {
+					cs, err := newStream(ctx, opts...)
+					if err != nil {
+						return nil, err
+					}
+					return &mutatingClientStream{ClientStream: cs, closeSendErr: wantErr}, nil
+				},
+			},
+			makeRPC: func(ctx context.Context, client testgrpc.TestServiceClient, opt grpc.CallOption) error {
+				_, err := client.EmptyCall(ctx, &testpb.Empty{}, opt)
+				return err
+			},
+		},
+		{
+			name: "abort_in_RecvMsg_unary",
+			interceptor: &testClientInterceptor{
+				newStream: func(ctx context.Context, _ iresolver.RPCInfo, newStream func(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStream, error), opts ...grpc.CallOption) (grpc.ClientStream, error) {
+					cs, err := newStream(ctx, opts...)
+					if err != nil {
+						return nil, err
+					}
+					return &mutatingClientStream{ClientStream: cs, recvMsgErr: wantErr}, nil
+				},
+			},
+			makeRPC: func(ctx context.Context, client testgrpc.TestServiceClient, opt grpc.CallOption) error {
+				_, err := client.EmptyCall(ctx, &testpb.Empty{}, opt)
+				return err
+			},
+		},
+		{
+			name: "abort_in_RecvMsg_server_streaming",
+			interceptor: &testClientInterceptor{
+				newStream: func(ctx context.Context, _ iresolver.RPCInfo, newStream func(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStream, error), opts ...grpc.CallOption) (grpc.ClientStream, error) {
+					cs, err := newStream(ctx, opts...)
+					if err != nil {
+						return nil, err
+					}
+					return &mutatingClientStream{ClientStream: cs, recvMsgErr: wantErr}, nil
+				},
+			},
+			makeRPC: func(ctx context.Context, client testgrpc.TestServiceClient, opt grpc.CallOption) error {
+				stream, err := client.StreamingOutputCall(ctx, &testpb.StreamingOutputCallRequest{}, opt)
+				if err != nil {
+					return err
+				}
+				_, err = stream.Recv()
+				return err
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ss := &stubserver.StubServer{
+				EmptyCallF: func(context.Context, *testpb.Empty) (*testpb.Empty, error) {
+					return &testpb.Empty{}, nil
+				},
+				StreamingInputCallF: func(stream testgrpc.TestService_StreamingInputCallServer) error {
+					for {
+						if _, err := stream.Recv(); err != nil {
+							if err == io.EOF {
+								return stream.SendAndClose(&testpb.StreamingInputCallResponse{})
+							}
+							return err
+						}
+					}
+				},
+				StreamingOutputCallF: func(_ *testpb.StreamingOutputCallRequest, stream testgrpc.TestService_StreamingOutputCallServer) error {
+					return stream.Send(&testpb.StreamingOutputCallResponse{})
+				},
+			}
+			ss.R = manual.NewBuilderWithScheme("onfinish-abort")
+			if err := ss.Start(nil); err != nil {
+				t.Fatalf("Error starting stub server: %v", err)
+			}
+			defer ss.Stop()
+
+			state := iresolver.SetConfigSelector(resolver.State{
+				Addresses:     []resolver.Address{{Addr: ss.Address}},
+				ServiceConfig: ss.R.CC().ParseServiceConfig("{}"),
+			}, funcConfigSelector{
+				f: func(iresolver.RPCInfo) (*iresolver.RPCConfig, error) {
+					return &iresolver.RPCConfig{Interceptor: tc.interceptor}, nil
+				},
+			})
+			ss.R.UpdateState(state)
+
+			ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
+			defer cancel()
+
+			var onFinishCount int
+			var onFinishErr error
+			err := tc.makeRPC(ctx, ss.Client, grpc.OnFinish(func(err error) {
+				onFinishCount++
+				onFinishErr = err
+			}))
+			if status.Code(err) != codes.PermissionDenied {
+				t.Fatalf("RPC failed with error %v, want code %v", err, codes.PermissionDenied)
+			}
+			if onFinishCount != 1 {
+				t.Fatalf("OnFinish called %d times, want 1", onFinishCount)
+			}
+			if status.Code(onFinishErr) != codes.PermissionDenied {
+				t.Fatalf("OnFinish received error %v, want code %v", onFinishErr, codes.PermissionDenied)
+			}
+		})
 	}
 }

@@ -237,7 +237,7 @@ type CallOption interface {
 
 	// after is called after the call has completed.  after cannot return an
 	// error, so any failures should be reported via output parameters.
-	after(*callInfo, *csAttempt)
+	after(*callInfo, ClientStream)
 }
 
 // EmptyCallOption does not alter the Call configuration.
@@ -245,8 +245,8 @@ type CallOption interface {
 // by interceptors.
 type EmptyCallOption struct{}
 
-func (EmptyCallOption) before(*callInfo) error      { return nil }
-func (EmptyCallOption) after(*callInfo, *csAttempt) {}
+func (EmptyCallOption) before(*callInfo) error       { return nil }
+func (EmptyCallOption) after(*callInfo, ClientStream) {}
 
 // StaticMethod returns a CallOption which specifies that a call is being made
 // to a method that is static, which means the method is known at compile time
@@ -280,8 +280,8 @@ type HeaderCallOption struct {
 }
 
 func (o HeaderCallOption) before(*callInfo) error { return nil }
-func (o HeaderCallOption) after(_ *callInfo, attempt *csAttempt) {
-	*o.HeaderAddr, _ = attempt.transportStream.Header()
+func (o HeaderCallOption) after(_ *callInfo, cs ClientStream) {
+	*o.HeaderAddr, _ = cs.Header()
 }
 
 // Trailer returns a CallOptions that retrieves the trailer metadata
@@ -302,8 +302,8 @@ type TrailerCallOption struct {
 }
 
 func (o TrailerCallOption) before(*callInfo) error { return nil }
-func (o TrailerCallOption) after(_ *callInfo, attempt *csAttempt) {
-	*o.TrailerAddr = attempt.transportStream.Trailer()
+func (o TrailerCallOption) after(_ *callInfo, cs ClientStream) {
+	*o.TrailerAddr = cs.Trailer()
 }
 
 // Peer returns a CallOption that retrieves peer information for a unary RPC.
@@ -324,8 +324,8 @@ type PeerCallOption struct {
 }
 
 func (o PeerCallOption) before(*callInfo) error { return nil }
-func (o PeerCallOption) after(_ *callInfo, attempt *csAttempt) {
-	if x, ok := peer.FromContext(attempt.transportStream.Context()); ok {
+func (o PeerCallOption) after(_ *callInfo, cs ClientStream) {
+	if x, ok := peer.FromContext(cs.Context()); ok {
 		*o.PeerAddr = *x
 	}
 }
@@ -363,7 +363,7 @@ func (o FailFastCallOption) before(c *callInfo) error {
 	c.failFast = o.FailFast
 	return nil
 }
-func (o FailFastCallOption) after(*callInfo, *csAttempt) {}
+func (o FailFastCallOption) after(*callInfo, ClientStream) {}
 
 // OnFinish returns a CallOption that configures a callback to be called when
 // the call completes. The error passed to the callback is the status of the
@@ -397,7 +397,7 @@ func (o OnFinishCallOption) before(*callInfo) error {
 	return nil
 }
 
-func (o OnFinishCallOption) after(*callInfo, *csAttempt) {}
+func (o OnFinishCallOption) after(*callInfo, ClientStream) {}
 
 // MaxCallRecvMsgSize returns a CallOption which sets the maximum message size
 // in bytes the client can receive. If this is not set, gRPC uses the default
@@ -421,7 +421,7 @@ func (o MaxRecvMsgSizeCallOption) before(c *callInfo) error {
 	c.maxReceiveMessageSize = &o.MaxRecvMsgSize
 	return nil
 }
-func (o MaxRecvMsgSizeCallOption) after(*callInfo, *csAttempt) {}
+func (o MaxRecvMsgSizeCallOption) after(*callInfo, ClientStream) {}
 
 // CallAuthority returns a CallOption that sets the HTTP/2 :authority header of
 // an RPC to the specified value. When using CallAuthority, the credentials in
@@ -451,7 +451,7 @@ func (o AuthorityOverrideCallOption) before(c *callInfo) error {
 	return nil
 }
 
-func (o AuthorityOverrideCallOption) after(*callInfo, *csAttempt) {}
+func (o AuthorityOverrideCallOption) after(*callInfo, ClientStream) {}
 
 // MaxCallSendMsgSize returns a CallOption which sets the maximum message size
 // in bytes the client can send. If this is not set, gRPC uses the default
@@ -475,7 +475,7 @@ func (o MaxSendMsgSizeCallOption) before(c *callInfo) error {
 	c.maxSendMessageSize = &o.MaxSendMsgSize
 	return nil
 }
-func (o MaxSendMsgSizeCallOption) after(*callInfo, *csAttempt) {}
+func (o MaxSendMsgSizeCallOption) after(*callInfo, ClientStream) {}
 
 // PerRPCCredentials returns a CallOption that sets credentials.PerRPCCredentials
 // for a call.
@@ -498,7 +498,7 @@ func (o PerRPCCredsCallOption) before(c *callInfo) error {
 	c.creds = o.Creds
 	return nil
 }
-func (o PerRPCCredsCallOption) after(*callInfo, *csAttempt) {}
+func (o PerRPCCredsCallOption) after(*callInfo, ClientStream) {}
 
 // UseCompressor returns a CallOption which sets the compressor used when
 // sending the request.  If WithCompressor is also set, UseCompressor has
@@ -526,7 +526,7 @@ func (o CompressorCallOption) before(c *callInfo) error {
 	c.compressorName = o.CompressorType
 	return nil
 }
-func (o CompressorCallOption) after(*callInfo, *csAttempt) {}
+func (o CompressorCallOption) after(*callInfo, ClientStream) {}
 
 // acceptCompressors returns a CallOption that limits the compression algorithms
 // advertised in the grpc-accept-encoding header for response messages.
@@ -551,7 +551,7 @@ func (o acceptCompressorsCallOption) before(c *callInfo) error {
 	return nil
 }
 
-func (acceptCompressorsCallOption) after(*callInfo, *csAttempt) {}
+func (acceptCompressorsCallOption) after(*callInfo, ClientStream) {}
 
 // CallContentSubtype returns a CallOption that will set the content-subtype
 // for a call. For example, if content-subtype is "json", the Content-Type over
@@ -588,7 +588,7 @@ func (o ContentSubtypeCallOption) before(c *callInfo) error {
 	c.contentSubtype = o.ContentSubtype
 	return nil
 }
-func (o ContentSubtypeCallOption) after(*callInfo, *csAttempt) {}
+func (o ContentSubtypeCallOption) after(*callInfo, ClientStream) {}
 
 // ForceCodec returns a CallOption that will set codec to be used for all
 // request and response messages for a call. The result of calling Name() will
@@ -627,7 +627,7 @@ func (o ForceCodecCallOption) before(c *callInfo) error {
 	c.codec = newCodecV1Bridge(o.Codec)
 	return nil
 }
-func (o ForceCodecCallOption) after(*callInfo, *csAttempt) {}
+func (o ForceCodecCallOption) after(*callInfo, ClientStream) {}
 
 // ForceCodecV2 returns a CallOption that will set codec to be used for all
 // request and response messages for a call. The result of calling Name() will
@@ -667,7 +667,7 @@ func (o ForceCodecV2CallOption) before(c *callInfo) error {
 	return nil
 }
 
-func (o ForceCodecV2CallOption) after(*callInfo, *csAttempt) {}
+func (o ForceCodecV2CallOption) after(*callInfo, ClientStream) {}
 
 // CallCustomCodec behaves like ForceCodec, but accepts a grpc.Codec instead of
 // an encoding.Codec.
@@ -692,7 +692,7 @@ func (o CustomCodecCallOption) before(c *callInfo) error {
 	c.codec = newCodecV0Bridge(o.Codec)
 	return nil
 }
-func (o CustomCodecCallOption) after(*callInfo, *csAttempt) {}
+func (o CustomCodecCallOption) after(*callInfo, ClientStream) {}
 
 // MaxRetryRPCBufferSize returns a CallOption that limits the amount of memory
 // used for buffering this RPC's requests for retry purposes.
@@ -720,7 +720,7 @@ func (o MaxRetryRPCBufferSizeCallOption) before(c *callInfo) error {
 	c.maxRetryRPCBufferSize = o.MaxRetryRPCBufferSize
 	return nil
 }
-func (o MaxRetryRPCBufferSizeCallOption) after(*callInfo, *csAttempt) {}
+func (o MaxRetryRPCBufferSizeCallOption) after(*callInfo, ClientStream) {}
 
 // The format of the payload: compressed or not?
 type payloadFormat uint8
