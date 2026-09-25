@@ -53,8 +53,8 @@ type RPCConfig struct {
 	// The context to use for the remainder of the RPC; can pass info to LB
 	// policy or affect timeout or metadata.
 	Context      context.Context
-	MethodConfig serviceconfig.MethodConfig // configuration to use for this RPC
-	Interceptor  any
+	MethodConfig serviceconfig.MethodConfig // Configuration to use for this RPC
+	Interceptors []any                      // xDS HTTP filters to use for this RPC, of type httpfilter.ClientInterceptor
 }
 
 type csKeyType string
