@@ -31,9 +31,9 @@ import (
 )
 
 var (
-	randIntN        = rand.IntN
-	errNoAssignment = errors.New("autosharding: no assignment available and fallback is disabled")
-	errNoEndpoints  = errors.New("autosharding: matching slice has no available endpoints")
+	randIntN              = rand.IntN
+	errNoAssignment       = errors.New("autosharding: no assignment available and fallback is disabled")
+	errNoEndpointsInSlice = errors.New("autosharding: matching slice has no available endpoints")
 )
 
 // pickerEndpoint holds the snapshot of an endpoint's state needed by the
@@ -50,12 +50,12 @@ type picker struct {
 	sliceMap          *sliceMap
 	endpoints         []pickerEndpoint // Ordered 1:1 by endpointState.index
 	isSliceInFallback []bool           // Precomputed per-slice fallback status
-	cfg               *lbConfig
+	cfg               *LBConfig
 }
 
 // newPicker constructs a new picker from the given endpointMap, sliceMap, and
 // LB policy configuration.
-func newPicker(endpointMap map[string]*endpointState, sm *sliceMap, cfg *lbConfig) *picker {
+func newPicker(endpointMap map[string]*endpointState, sm *sliceMap, cfg *LBConfig) *picker {
 	// Every endpoint in endpointMap has a unique index in the range
 	// [0, len(endpointMap)-1]. Placing each entry at endpoints[es.index] orders
 	// the slice by index without needing to sort.
@@ -129,7 +129,7 @@ func (p *picker) Pick(info balancer.PickInfo) (balancer.PickResult, error) {
 // into p.endpoints by starting at a random position and scanning circularly.
 func (p *picker) pickFromEndpointIndices(indices []int, info balancer.PickInfo) (balancer.PickResult, error) {
 	if len(indices) == 0 {
-		return balancer.PickResult{}, errNoEndpoints
+		return balancer.PickResult{}, errNoEndpointsInSlice
 	}
 
 	firstIndex := randIntN(len(indices))
