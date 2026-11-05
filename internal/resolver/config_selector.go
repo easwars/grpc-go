@@ -54,7 +54,11 @@ type RPCConfig struct {
 	// policy or affect timeout or metadata.
 	Context      context.Context
 	MethodConfig serviceconfig.MethodConfig // Configuration to use for this RPC
-	Interceptors []any                      // xDS HTTP filters to use for this RPC, of type httpfilter.ClientInterceptor
+	// Interceptors to run for this RPC, e.g. xDS HTTP filters. They are
+	// chained in order: Interceptors[0] is the outermost interceptor and is
+	// invoked first. Each element must implement the clientInterceptor
+	// interface defined in the grpc package.
+	Interceptors []any
 }
 
 type csKeyType string
