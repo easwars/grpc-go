@@ -343,11 +343,15 @@ func (w *clientStreamWrapper) finish(err error) {
 // Header returns the header metadata received from the server.
 func (w *clientStreamWrapper) Header() (metadata.MD, error) {
 	md, err := w.ClientStream.Header()
-	if err != nil {
+	if err != nil && err != io.EOF {
 		// While clientStream.Header returns (nil, nil) when the stream was
 		// terminated without headers, xDS interceptors may return a non-nil
 		// error when header processing fails. In such cases, we need to finish
 		// the stream with the error, as the user may not call RecvMsg.
+		//
+		// io.EOF does not carry the RPC's status, which the user discovers by
+		// calling RecvMsg. So, the stream is not finished here; finishing with
+		// io.EOF would incorrectly report the RPC as successful.
 		w.finish(err)
 	}
 	return md, err
@@ -373,6 +377,10 @@ func (w *clientStreamWrapper) SendMsg(m any) error {
 	// send multiple messages. In this case, the client should handle any type
 	// of error, including io.EOF and call CloseSend once it is done sending
 	// messages.
+	//
+	// io.EOF indicates that the stream has ended without carrying the RPC's
+	// status, which the client discovers by calling RecvMsg. So, the stream is
+	// finished only for other errors, which are terminal.
 	if w.desc.ClientStreams {
 		if err != nil && err != io.EOF {
 			w.finish(err)

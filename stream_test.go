@@ -1164,3 +1164,72 @@ func (s) TestClientStream_OnFinishCanCallStreamMethods(t *testing.T) {
 		t.Fatal("Timed out waiting for OnFinish callback to call Header(); possible deadlock in clientStreamWrapper.finish")
 	}
 }
+
+// Test verifies that when an interceptor's Header method returns io.EOF, the
+// stream is not finished at that point, and that the RPC's status is instead
+// determined by RecvMsg and reported to OnFinish callbacks.
+func (s) TestClientStream_HeaderEOFDoesNotFinishStream(t *testing.T) {
+	ss := &stubserver.StubServer{
+		StreamingOutputCallF: func(*testpb.StreamingOutputCallRequest, testgrpc.TestService_StreamingOutputCallServer) error {
+			return status.Error(codes.ResourceExhausted, "server failure")
+		},
+	}
+	ss.R = manual.NewBuilderWithScheme("header-eof")
+	if err := ss.Start(nil); err != nil {
+		t.Fatalf("Error starting stub server: %v", err)
+	}
+	defer ss.Stop()
+
+	interceptor := &stubClientInterceptor{
+		newStreamFunc: func(ctx context.Context, _ iresolver.RPCInfo, newStream func(context.Context, ...grpc.CallOption) (grpc.ClientStream, error), opts ...grpc.CallOption) (grpc.ClientStream, error) {
+			cs, err := newStream(ctx, opts...)
+			if err != nil {
+				return nil, err
+			}
+			return &mutatingClientStream{ClientStream: cs, headerErr: io.EOF}, nil
+		},
+	}
+	state := iresolver.SetConfigSelector(resolver.State{
+		Addresses:     []resolver.Address{{Addr: ss.Address}},
+		ServiceConfig: ss.R.CC().ParseServiceConfig("{}"),
+	}, stubConfigSelector{
+		selectConfigFunc: func(iresolver.RPCInfo) (*iresolver.RPCConfig, error) {
+			return &iresolver.RPCConfig{Interceptors: []any{interceptor}}, nil
+		},
+	})
+	ss.R.UpdateState(state)
+
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
+	defer cancel()
+
+	onFinishCh := make(chan error, 1)
+	stream, err := ss.Client.StreamingOutputCall(ctx, &testpb.StreamingOutputCallRequest{}, grpc.OnFinish(func(err error) {
+		onFinishCh <- err
+	}))
+	if err != nil {
+		t.Fatalf("StreamingOutputCall() failed: %v", err)
+	}
+
+	if _, err := stream.Header(); err != io.EOF {
+		t.Fatalf("stream.Header() returned error %v, want %v", err, io.EOF)
+	}
+	// If Header had finished the stream, OnFinish would have been invoked
+	// synchronously from within Header.
+	select {
+	case err := <-onFinishCh:
+		t.Fatalf("OnFinish called with error %v after Header() returned io.EOF, want no call until RecvMsg returns", err)
+	default:
+	}
+
+	if _, err := stream.Recv(); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("stream.Recv() returned error %v, want code %v", err, codes.ResourceExhausted)
+	}
+	select {
+	case err := <-onFinishCh:
+		if status.Code(err) != codes.ResourceExhausted {
+			t.Fatalf("OnFinish called with error %v, want code %v", err, codes.ResourceExhausted)
+		}
+	case <-ctx.Done():
+		t.Fatal("Timed out waiting for OnFinish to be called")
+	}
+}
