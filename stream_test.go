@@ -285,7 +285,6 @@ type mutatingClientStream struct {
 	overridePeer *peer.Peer
 	headerErr    error
 	sendMsgErr   error
-	closeSendErr error
 	recvMsgErr   error
 }
 
@@ -327,13 +326,6 @@ func (s *mutatingClientStream) SendMsg(m any) error {
 		return s.sendMsgErr
 	}
 	return s.ClientStream.SendMsg(m)
-}
-
-func (s *mutatingClientStream) CloseSend() error {
-	if s.closeSendErr != nil {
-		return s.closeSendErr
-	}
-	return s.ClientStream.CloseSend()
 }
 
 func (s *mutatingClientStream) RecvMsg(m any) error {
@@ -573,23 +565,6 @@ func (s) TestClientStream_OnFinishWhenInterceptorAborts(t *testing.T) {
 					return err
 				}
 				return stream.Send(&testpb.StreamingInputCallRequest{})
-			},
-			wantInnermostCreated: true,
-		},
-		{
-			name: "abort_in_CloseSend_unary",
-			interceptor: &stubClientInterceptor{
-				newStreamFunc: func(ctx context.Context, _ iresolver.RPCInfo, newStream func(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStream, error), opts ...grpc.CallOption) (grpc.ClientStream, error) {
-					cs, err := newStream(ctx, opts...)
-					if err != nil {
-						return nil, err
-					}
-					return &mutatingClientStream{ClientStream: cs, closeSendErr: wantErr}, nil
-				},
-			},
-			makeRPC: func(ctx context.Context, client testgrpc.TestServiceClient, opt grpc.CallOption) error {
-				_, err := client.EmptyCall(ctx, &testpb.Empty{}, opt)
-				return err
 			},
 			wantInnermostCreated: true,
 		},

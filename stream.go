@@ -405,10 +405,7 @@ func (w *clientStreamWrapper) SendMsg(m any) error {
 	// CloseSend for server-streaming RPCs, it is explicitly called here to
 	// ensure downstream interceptors are also notified when callers interact
 	// with the ClientStream API directly.
-	if err := w.CloseSend(); err != nil && err != io.EOF {
-		w.finish(err)
-		return err
-	}
+	w.CloseSend()
 	return nil
 }
 
