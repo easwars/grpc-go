@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -469,17 +470,31 @@ func (s) TestAllSendUnary(t *testing.T) {
 	client := testgrpc.NewTestServiceClient(cc)
 
 	// Send a Unary RPC from the client with "hello-request" and header
-	// "request-to-remove", and verify that the final received response body is
-	// "hello-response-mutated".
+	// "request-to-remove", and verify that the final received response body,
+	// headers, and trailers reflect the processor's mutations.
 	reqMsg := &testpb.SimpleRequest{Payload: &testpb.Payload{Body: []byte(reqBody)}}
 	ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs(reqHeaderToRemove, "true"))
 
-	resp, err := client.UnaryCall(ctx, reqMsg)
+	var gotHeader, gotTrailer metadata.MD
+	resp, err := client.UnaryCall(ctx, reqMsg, grpc.Header(&gotHeader), grpc.Trailer(&gotTrailer))
 	if err != nil {
 		t.Fatalf("UnaryCall() failed: %v", err)
 	}
 	if body := string(resp.GetPayload().GetBody()); body != respBodyMutated {
 		t.Fatalf("UnaryCall() returned payload: %s, want: %s", body, respBodyMutated)
+	}
+	wantHeader := metadata.Pairs(
+		"content-type", "application/grpc",
+		respHeaderMutated, "true",
+	)
+	if diff := cmp.Diff(wantHeader, gotHeader); diff != "" {
+		t.Errorf("Unexpected header metadata (-want +got):\n%s", diff)
+	}
+	wantTrailer := metadata.Pairs(
+		respTrailerMutated, "true",
+	)
+	if diff := cmp.Diff(wantTrailer, gotTrailer); diff != "" {
+		t.Errorf("Unexpected trailer metadata (-want +got):\n%s", diff)
 	}
 }
 
@@ -954,6 +969,9 @@ func (s) TestTrailersOnly(t *testing.T) {
 	// Backend stub service immediately returns an Aborted error to trigger
 	// Trailers-Only.
 	stub := stubserver.StartTestService(t, &stubserver.StubServer{
+		EmptyCallF: func(context.Context, *testpb.Empty) (*testpb.Empty, error) {
+			return nil, status.Error(codes.Aborted, "intentional backend failure")
+		},
 		FullDuplexCallF: func(stream testgrpc.TestService_FullDuplexCallServer) error {
 			// Wait for client request message before failing.
 			if _, err := stream.Recv(); err != nil {
@@ -1003,10 +1021,25 @@ func (s) TestTrailersOnly(t *testing.T) {
 	}
 
 	// Verify mutated response trailers.
-	trailerMetadata := stream.Trailer()
-	gotTrailers := trailerMetadata.Get(respHeaderModified)
-	if len(gotTrailers) != 1 || gotTrailers[0] != "true" {
-		t.Fatalf("Client received resp-header-modified = %v, want [true]", gotTrailers)
+	wantTrailer := metadata.Pairs(
+		"content-type", "application/grpc",
+		respHeaderModified, "true",
+	)
+	if diff := cmp.Diff(wantTrailer, stream.Trailer()); diff != "" {
+		t.Fatalf("Unexpected streaming trailer metadata (-want +got):\n%s", diff)
+	}
+
+	// Verify the same behavior for a unary RPC using grpc.Header and
+	// grpc.Trailer CallOptions.
+	var gotUnaryHeader, gotUnaryTrailer metadata.MD
+	if _, err := client.EmptyCall(ctx, &testpb.Empty{}, grpc.Header(&gotUnaryHeader), grpc.Trailer(&gotUnaryTrailer)); status.Code(err) != codes.Aborted {
+		t.Fatalf("EmptyCall() error = %v, want code %v", err, codes.Aborted)
+	}
+	if gotUnaryHeader != nil {
+		t.Fatalf("EmptyCall() gotHeader = %v, want nil for trailers-only response", gotUnaryHeader)
+	}
+	if diff := cmp.Diff(wantTrailer, gotUnaryTrailer); diff != "" {
+		t.Fatalf("Unexpected unary trailer metadata (-want +got):\n%s", diff)
 	}
 }
 
@@ -2477,6 +2510,11 @@ func (s) TestImmediateResponseTrailers(t *testing.T) {
 	})
 
 	stub := stubserver.StartTestService(t, &stubserver.StubServer{
+		EmptyCallF: func(ctx context.Context, _ *testpb.Empty) (*testpb.Empty, error) {
+			grpc.SendHeader(ctx, metadata.Pairs("server-header", "val"))
+			grpc.SetTrailer(ctx, metadata.Pairs(testTrailerKey, originalVal))
+			return nil, status.Error(codes.Unavailable, "backend error")
+		},
 		FullDuplexCallF: func(stream testgrpc.TestService_FullDuplexCallServer) error {
 			// Read c1.
 			if _, err := stream.Recv(); err != nil {
@@ -2541,9 +2579,18 @@ func (s) TestImmediateResponseTrailers(t *testing.T) {
 		}
 	}
 	// Trailer() should return the headers included in the ImmediateResponse.
-	gotTrailer := stream.Trailer()
-	if got := gotTrailer.Get(testTrailerKey); len(got) != 1 || got[0] != immediateMutatedVal {
-		t.Fatalf("Trailer() returned %v, want test-trailer containing mutated-immediate-val", gotTrailer)
+	wantTrailer := metadata.Pairs(testTrailerKey, immediateMutatedVal)
+	if diff := cmp.Diff(wantTrailer, stream.Trailer()); diff != "" {
+		t.Fatalf("Unexpected streaming trailer metadata (-want +got):\n%s", diff)
+	}
+
+	// Verify the same behavior for a unary RPC using grpc.Trailer CallOption.
+	var gotUnaryTrailer metadata.MD
+	if _, err := client.EmptyCall(ctx, &testpb.Empty{}, grpc.Trailer(&gotUnaryTrailer)); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("EmptyCall() error = %v, want code %v", err, codes.PermissionDenied)
+	}
+	if diff := cmp.Diff(wantTrailer, gotUnaryTrailer); diff != "" {
+		t.Fatalf("Unexpected unary trailer metadata (-want +got):\n%s", diff)
 	}
 }
 
